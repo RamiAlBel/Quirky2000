@@ -10,6 +10,11 @@
 //   L2, L3:              tiny (8->32->1), done in float FMA
 #pragma once
 #include "position.h"
+// The same code is compiled twice: as namespace nnue (main net, width ACC_WIDTH) and, via nnue_small.cpp,
+// as namespace nnue_small (width 128, used for clearly decided positions when UseSmallNet is on).
+#ifndef NNUE_NS
+#define NNUE_NS nnue
+#endif
 
 #ifdef NNUE_LNN2
 #ifndef ACC_WIDTH
@@ -27,12 +32,12 @@ typedef int8_t ft_t;
 #endif
 static_assert(NNUE_ACC % 64 == 0, "accumulator width must be a multiple of 64");
 
+namespace NNUE_NS {
 struct alignas(64) Accumulator {
     int16_t v[2][NNUE_ACC];
     int32_t psqt[2][8];  // LNN4 material shortcut sums per output bucket (zero otherwise)
 };
 
-namespace nnue {
 bool load(const std::string& path);
 void refresh(const Position& pos, Accumulator& acc, int persp);
 void refresh_all(const Position& pos, Accumulator& acc);
@@ -43,3 +48,6 @@ int evaluate(const Accumulator& acc, int stm, int pieces);             // centip
 double evaluate_float_raw(const Accumulator& acc, int stm, int pieces); // raw network output, float reference
 double evaluate_quant_raw(const Accumulator& acc, int stm, int pieces); // raw network output, quantized path
 }
+#ifndef NNUE_SMALL_TU
+using nnue::Accumulator;
+#endif

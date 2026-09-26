@@ -6,7 +6,7 @@
 
 extern int UseFinny;  // search.cpp tunable
 
-namespace nnue {
+namespace NNUE_NS {
 
 static ft_t* FT = nullptr;                            // [rows][NNUE_ACC]
 alignas(64) static int16_t FTB[NNUE_ACC];              // feature bias (all zero for LNN1)
@@ -379,4 +379,4 @@ int evaluate(const Accumulator& acc, int stm, int pieces) {
 #include "nnue_head.inc"
 #endif
 
-}  // namespace nnue
+}  // namespace NNUE_NS

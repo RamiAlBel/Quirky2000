@@ -149,6 +149,7 @@ int main(int argc, char** argv) {
             out_line("option name Ponder type check default false");
             out_line("option name SyzygyPath type string default <empty>");
             out_line("option name BookFile type string default <empty>");
+            out_line("option name SmallNetFile type string default <empty>");
             out_line("option name EvalFile type string default lite.nnue");
             for (auto& t : tunables())
                 out_line("option name %s type spin default %d min %d max %d", t.name, t.def, t.lo, t.hi);
@@ -167,6 +168,8 @@ int main(int argc, char** argv) {
                 std::string path = value.find_first_of("/\\") == std::string::npos ? exe_dir() + "/" + value : value;
                 netLoaded = nnue::load(path);
                 out_line(netLoaded ? "info string loaded network %s" : "info string ERROR could not load network %s", path.c_str());
+            } else if (name == "SmallNetFile") {
+                out_line(search::set_small_net(value) ? "info string small net %s loaded" : "info string ERROR could not load small net %s", value.c_str());
             } else if (name == "BookFile") {
                 out_line(book::open(value) ? "info string book %s loaded" : "info string ERROR could not load book %s", value.c_str());
             } else if (name == "SyzygyPath") {

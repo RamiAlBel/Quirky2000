@@ -1,5 +1,6 @@
 #include "search.h"
 #include "nnue.h"
+#include "nnue_small.h"
 #include "tune.h"
 #include "../fathom/src/tbprobe.h"
 #include <atomic>
@@ -37,6 +38,8 @@ TUNE(RazorMul, 250, 50, 500);
 TUNE(SyzygyProbeDepth, 1, 1, 10);  // Syzygy is active when SyzygyPath is set (UCI string option)
 TUNE(UseBook, 0, 0, 1);      // play from the Polyglot book set with BookFile (main.cpp)
 TUNE(BookDepth, 20, 0, 60);   // plies from the game start
+TUNE(UseSmallNet, 0, 0, 1);            // 128-wide net (SmallNetFile) when material is lopsided
+TUNE(SmallNetThreshold, 1000, -1, 3000);  // |material balance| in cp above which the small net is used
 TUNE(UseTM, 0, 0, 1);        // soft/hard time limits + best-move stability
 TUNE(TmSoftDiv, 30, 10, 60);
 TUNE(TmIncPct, 75, 0, 100);
@@ -164,6 +167,8 @@ struct Worker {
     Position pos[MAX_PLY + 4];
     Accumulator acc[MAX_PLY + 4];
     bool accOk[MAX_PLY + 4];  // lazy mode: acc[ply] is up to date
+    nnue_small::Accumulator accS[MAX_PLY + 4];  // small net, always lazy
+    bool accSOk[MAX_PLY + 4];
     std::vector<uint64_t> keys;
     int gameLen = 0;
     int pfn[MAX_PLY + 4];  // plies since last null move (bounds repetition scans)
@@ -281,10 +286,35 @@ static void ensure_acc(Worker& w, int ply) {
     w.accOk[ply] = true;
 }
 
+static bool smallLoaded = false;
+static void ensure_accS(Worker& w, int ply) {
+    if (w.accSOk[ply]) return;
+    if (ply == 0) nnue_small::refresh_all(w.pos[0], w.accS[0]);
+    else {
+        ensure_accS(w, ply - 1);
+        Move m = w.currentMove[ply - 1];
+        if (m) nnue_small::update(w.pos[ply - 1], m, w.pos[ply], w.accS[ply - 1], w.accS[ply]);
+        else w.accS[ply] = w.accS[ply - 1];
+    }
+    w.accSOk[ply] = true;
+}
+static inline int material(const Position& p) {  // white minus black, simple piece values
+    static const int V[5] = {100, 320, 330, 500, 950};
+    int m = 0;
+    for (int t = 0; t < 5; t++) m += V[t] * (popcount(p.pcs(WHITE, t)) - popcount(p.pcs(BLACK, t)));
+    return m;
+}
+
 static inline int evaluate(Worker& w, int ply) {
-    ensure_acc(w, ply);
     const Position& p = w.pos[ply];
-    int v = nnue::evaluate(w.acc[ply], p.stm, popcount(p.occupied));
+    int v;
+    if (UseSmallNet && smallLoaded && std::abs(material(p)) > SmallNetThreshold) {
+        ensure_accS(w, ply);
+        v = nnue_small::evaluate(w.accS[ply], p.stm, popcount(p.occupied));
+    } else {
+        ensure_acc(w, ply);
+        v = nnue::evaluate(w.acc[ply], p.stm, popcount(p.occupied));
+    }
     v = v * (200 - p.halfmove) / 200;
     return std::clamp(v, -MATE_BOUND + 1, MATE_BOUND - 1);
 }
@@ -420,6 +450,7 @@ static inline void make_child(Worker& w, int ply, Move m) {
     child.do_move(m);
     if (UseLazyAcc) w.accOk[ply + 1] = false;
     else nnue::update(w.pos[ply], m, child, w.acc[ply], w.acc[ply + 1]), w.accOk[ply + 1] = true;
+    w.accSOk[ply + 1] = false;
     w.currentMove[ply] = m;
     w.movedPiece[ply] = w.pos[ply].board[from_sq(m)];
     w.keys[w.gameLen + ply] = child.key;
@@ -576,6 +607,7 @@ static int negamax(Worker& w, int alpha, int beta, int depth, int ply, bool cutN
             child.do_null();
             if (UseLazyAcc) w.accOk[ply + 1] = false;
             else w.acc[ply + 1] = w.acc[ply], w.accOk[ply + 1] = true;
+            w.accSOk[ply + 1] = false;
             w.currentMove[ply] = 0;
             w.movedPiece[ply] = NO_PIECE;
             w.keys[w.gameLen + ply] = child.key;
@@ -864,6 +896,11 @@ void set_threads(int n) {
     }
 }
 void set_multipv(int n) { optMultiPV = std::max(1, n); }
+bool set_small_net(const std::string& path) {
+    wait();
+    smallLoaded = nnue_small::load(path);
+    return smallLoaded;
+}
 int set_syzygy(const std::string& path) {
     wait();
     tb_init(path.c_str());
@@ -905,6 +942,7 @@ void start(const Position& root, const std::vector<uint64_t>& history, const Lim
         w->pos[0] = root;
         nnue::refresh_all(root, w->acc[0]);
         w->accOk[0] = true;
+        w->accSOk[0] = false;
         w->keys = history;
         w->gameLen = (int)history.size();
         w->keys.resize(w->gameLen + MAX_PLY + 8);
