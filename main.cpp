@@ -4,6 +4,9 @@
 #include "nnue.h"
 #include "search.h"
 #include "tune.h"
+#include "book.h"
+
+extern int UseBook, BookDepth;  // search.cpp tunables
 #include <iostream>
 #include <sstream>
 #include <string>
@@ -145,6 +148,7 @@ int main(int argc, char** argv) {
             out_line("option name MultiPV type spin default 1 min 1 max 16");
             out_line("option name Ponder type check default false");
             out_line("option name SyzygyPath type string default <empty>");
+            out_line("option name BookFile type string default <empty>");
             out_line("option name EvalFile type string default lite.nnue");
             for (auto& t : tunables())
                 out_line("option name %s type spin default %d min %d max %d", t.name, t.def, t.lo, t.hi);
@@ -163,6 +167,8 @@ int main(int argc, char** argv) {
                 std::string path = value.find_first_of("/\\") == std::string::npos ? exe_dir() + "/" + value : value;
                 netLoaded = nnue::load(path);
                 out_line(netLoaded ? "info string loaded network %s" : "info string ERROR could not load network %s", path.c_str());
+            } else if (name == "BookFile") {
+                out_line(book::open(value) ? "info string book %s loaded" : "info string ERROR could not load book %s", value.c_str());
             } else if (name == "SyzygyPath") {
                 int n = search::set_syzygy(value);
                 out_line("info string syzygy: %d-piece tables from %s", n, value.c_str());
@@ -205,6 +211,13 @@ int main(int argc, char** argv) {
                 lim.time = myTime;
                 lim.inc = myInc;
             }
+            // own book: answer instantly while in book (hist holds one key per position since the start)
+            if (UseBook && book::loaded() && (int)hist.size() - 1 < BookDepth && !lim.ponder) {
+                if (Move bm = book::probe(pos)) {
+                    out_line("bestmove %s", move_to_uci(bm).c_str());
+                    continue;
+                }
+            }
             search::start(pos, hist, lim);
         } else if (tok == "ponderhit") {
             search::ponderhit();
@@ -213,6 +226,9 @@ int main(int argc, char** argv) {
         } else if (tok == "quit") {
             search::stop(); search::wait();
             break;
+        } else if (tok == "polykey") {
+            printf("%016llx\n", (unsigned long long)book::key(pos));
+            fflush(stdout);
         } else if (tok == "d") {
             printf("%s\n", pos.fen().c_str());
             fflush(stdout);

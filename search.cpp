@@ -35,6 +35,8 @@ TUNE(UseRazor, 0, 0, 1);
 TUNE(RazorMargin, 400, 100, 1000);
 TUNE(RazorMul, 250, 50, 500);
 TUNE(SyzygyProbeDepth, 1, 1, 10);  // Syzygy is active when SyzygyPath is set (UCI string option)
+TUNE(UseBook, 0, 0, 1);      // play from the Polyglot book set with BookFile (main.cpp)
+TUNE(BookDepth, 20, 0, 60);   // plies from the game start
 TUNE(UseTM, 0, 0, 1);        // soft/hard time limits + best-move stability
 TUNE(TmSoftDiv, 30, 10, 60);
 TUNE(TmIncPct, 75, 0, 100);
