@@ -9,8 +9,10 @@
 #include <sstream>
 #include <immintrin.h>
 #ifdef _MSC_VER
-#include <malloc.h>
 #include <intrin.h>
+#endif
+#ifdef _WIN32  // MSVC and MinGW
+#include <malloc.h>
 inline void* aligned_alloc64(size_t n) { return _aligned_malloc(n, 64); }
 inline void aligned_free64(void* p) { _aligned_free(p); }
 #else
