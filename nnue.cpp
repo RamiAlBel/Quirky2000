@@ -36,7 +36,7 @@ static inline int feat(const View& v, int persp, int pc, int sq) {
 }
 static inline bool is_feature_piece(int pc) { return FeatSet == 1 || type_of(pc) != KING; }
 static inline __m256i row16(int idx, int j) {
-#ifdef NNUE_LNN2
+#if defined(NNUE_LNN2) && !defined(FT_INT8)
     return _mm256_load_si256((const __m256i*)(FT + (size_t)idx * NNUE_ACC + j));
 #else
     return _mm256_cvtepi8_epi16(_mm_load_si128((const __m128i*)(FT + (size_t)idx * NNUE_ACC + j)));

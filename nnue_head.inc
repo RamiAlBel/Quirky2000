@@ -54,7 +54,9 @@ bool load(const std::string& path) {
     FT = (ft_t*)aligned_alloc64((size_t)rows * NNUE_ACC * sizeof(ft_t));
     if (PSQT) { free(PSQT); PSQT = nullptr; }
     std::vector<int32_t> ps(psqt ? (size_t)rows * nb : 0);
-    ok = fread(FTB, 2, acc, f) == (size_t)acc && fread(FT, sizeof(ft_t), (size_t)rows * acc, f) == (size_t)rows * acc &&
+    // FT weights are int16 in every file; an FT_INT8 build narrows them (the net must fit, see --ft8)
+    std::vector<int16_t> ft16((size_t)rows * acc);
+    ok = fread(FTB, 2, acc, f) == (size_t)acc && fread(ft16.data(), 2, ft16.size(), f) == ft16.size() &&
          fread(ps.data(), 4, ps.size(), f) == ps.size() &&
          fread(l1w.data(), 4, l1w.size(), f) == l1w.size() && fread(l1b.data(), 4, l1b.size(), f) == l1b.size() &&
          fread(l2w.data(), 4, l2w.size(), f) == l2w.size() && fread(l2b.data(), 4, l2b.size(), f) == l2b.size() &&
@@ -62,6 +64,15 @@ bool load(const std::string& path) {
     fclose(f);
     if (!ok) return false;
 
+    for (size_t i = 0; i < ft16.size(); i++) {
+#ifdef FT_INT8
+        if (ft16[i] < -127 || ft16[i] > 127) {
+            fprintf(stderr, "nnue: %s has FT weights outside int8 (train with --ft8)\n", path.c_str());
+            return false;
+        }
+#endif
+        FT[i] = (ft_t)ft16[i];
+    }
     FtScale = scale; CpScale = cps;
     FeatSet = fs; PsqtOn = psqt; NB_psqt = nb; PsqtScale = psqtScale;
     if (fs == 1)
@@ -75,7 +86,7 @@ bool load(const std::string& path) {
     }
     NetGen++;
     H1 = h1; H1p = (h1 + 7) / 8 * 8; H2 = h2; NB = nb; FtAct = fa; HidAct = ha; L1In = l1in; Mult = mult;
-    RequantMul = (int16_t)std::lround(FtScale * 127.0f * 32768.0f);
+    RequantMul = (int16_t)std::min(32767L, std::lround(FtScale * 127.0f * 32768.0f));
     ClampQ = (int16_t)clampQ;
     // exact multiplier 127*scale^2*2^20 is ~142; the rounding error is undone in L1Deq
     double sqkExact = 127.0 * (double)scale * scale * 1048576.0;

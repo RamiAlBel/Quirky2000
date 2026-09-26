@@ -16,7 +16,11 @@
 #define ACC_WIDTH 256
 #endif
 constexpr int NNUE_ACC = ACC_WIDTH;
+#ifdef FT_INT8
+typedef int8_t ft_t;  // -DFT_INT8: nets trained with --ft8 (all FT weights within +-127 at scale 1/127)
+#else
 typedef int16_t ft_t;
+#endif
 #else
 constexpr int NNUE_ACC = 256, NNUE_H1 = 8, NNUE_H2 = 32;
 typedef int8_t ft_t;
