@@ -16,6 +16,8 @@ static float FtScale = 0;
 // 0 HalfKP: king square x 10 non-king planes x 64 (kings are not features)
 // 1 HKB (LNN4): king bucket x 11 planes (own P..Q, opp P..Q, both kings) x 64, board mirrored so the
 //   perspective's king is on files a-d; the accumulator is refreshed when the king changes bucket or side
+// 2 THR: HKB x (piece attacked by the opponent or not): 22 planes. The 24 piece-code x attacked
+//   bitboards of parent and child are diffed on every update (moves change attack status non-locally)
 static int FeatSet = 0, PsqtOn = 0, NB_psqt = 1;
 static int KB[64];
 static int32_t* PSQT = nullptr;  // [rows][NB_psqt]
@@ -27,7 +29,36 @@ static inline View view_of(const Position& pos, int persp) {
     if (FeatSet == 0) return {k * 640, persp == BLACK ? 56 : 0, k};
     int mirror = (k & 7) >= 4 ? 7 : 0;
     int b = KB[k ^ mirror];
-    return {b * 704, (persp == BLACK ? 56 : 0) ^ mirror, b * 2 + (mirror ? 1 : 0)};
+    return {b * (FeatSet == 2 ? 1408 : 704), (persp == BLACK ? 56 : 0) ^ mirror, b * 2 + (mirror ? 1 : 0)};
+}
+static Bitboard attacks_by(const Position& p, int c) {
+    Bitboard a = 0, occ = p.occupied, b;
+    b = p.pcs(c, PAWN);   while (b) a |= bb::PawnAttacks[c][pop_lsb(b)];
+    b = p.pcs(c, KNIGHT); while (b) a |= bb::KnightAttacks[pop_lsb(b)];
+    b = p.pcs(c, BISHOP) | p.pcs(c, QUEEN); while (b) a |= bb::bishop_attacks(pop_lsb(b), occ);
+    b = p.pcs(c, ROOK) | p.pcs(c, QUEEN);   while (b) a |= bb::rook_attacks(pop_lsb(b), occ);
+    return a | bb::KingAttacks[p.king_sq(c)];
+}
+// THR feature sets: set[2*code + attacked] = squares of piece code with that attack status
+static void threat_sets(const Position& p, Bitboard set[24]) {
+    Bitboard att[2] = {attacks_by(p, WHITE), attacks_by(p, BLACK)};
+    for (int k = 0; k < 12; k++) {
+        Bitboard a = att[color_of(k) ^ 1];
+        set[2 * k] = p.pieces[k] & ~a;
+        set[2 * k + 1] = p.pieces[k] & a;
+    }
+}
+// feature of set index i (THR: code*2+att; otherwise the piece code) on square sq
+static inline int feat_set(const View& v, int persp, int i, int sq) {
+    int code = FeatSet == 2 ? i >> 1 : i, rel = color_of(code) == persp ? 0 : 1, t = type_of(code);
+    int plane = t == KING ? 10 : rel * 5 + t;
+    if (FeatSet == 2) plane = plane * 2 + (i & 1);
+    return v.base + plane * 64 + (sq ^ v.flip);
+}
+static inline int n_sets() { return FeatSet == 2 ? 24 : 12; }
+static inline void get_sets(const Position& p, Bitboard set[24]) {
+    if (FeatSet == 2) threat_sets(p, set);
+    else for (int k = 0; k < 12; k++) set[k] = p.pieces[k];
 }
 static inline int feat(const View& v, int persp, int pc, int sq) {
     int rel = color_of(pc) == persp ? 0 : 1, t = type_of(pc);
@@ -50,8 +81,14 @@ static inline void psqt_apply(int32_t* dst, const int* add, int na, const int* s
 void refresh(const Position& pos, Accumulator& acc, int persp) {
     View vw = view_of(pos, persp);
     int idx[32], n = 0;
-    Bitboard b = FeatSet == 1 ? pos.occupied : pos.occupied & ~(pos.pcs(WHITE, KING) | pos.pcs(BLACK, KING));
-    while (b) { int s = pop_lsb(b); idx[n++] = feat(vw, persp, pos.board[s], s); }
+    if (FeatSet == 2) {
+        Bitboard set[24];
+        threat_sets(pos, set);
+        for (int i = 0; i < 24; i++) for (Bitboard b = set[i]; b;) idx[n++] = feat_set(vw, persp, i, pop_lsb(b));
+    } else {
+        Bitboard b = FeatSet == 1 ? pos.occupied : pos.occupied & ~(pos.pcs(WHITE, KING) | pos.pcs(BLACK, KING));
+        while (b) { int s = pop_lsb(b); idx[n++] = feat(vw, persp, pos.board[s], s); }
+    }
     // 4 registers x 16 lanes = 64 lanes per pass keeps sums in registers across all pieces
     for (int j = 0; j < NNUE_ACC; j += 64) {
         const __m256i* bias = (const __m256i*)(FTB + j);
@@ -78,7 +115,7 @@ static int NetGen = 0;  // bumped on load: invalidates every thread's cache
 struct alignas(64) FinnyEntry {
     int16_t acc[NNUE_ACC];
     int32_t psqt[8];
-    Bitboard pcs[12];
+    Bitboard pcs[24];  // feature sets (piece codes; THR: code x attacked)
 };
 static thread_local FinnyEntry Finny[2][64];
 static thread_local int FinnyGen = -1;
@@ -96,12 +133,14 @@ static void refresh_cached(const Position& pos, Accumulator& acc, int persp) {
     View vw = view_of(pos, persp);
     FinnyEntry& e = Finny[persp][vw.key];
     int add[32], sub[32], na = 0, ns = 0;
-    for (int p = 0; p < 12; p++) {
-        if (!is_feature_piece(p)) continue;
-        Bitboard gone = e.pcs[p] & ~pos.pieces[p], come = pos.pieces[p] & ~e.pcs[p];
-        while (gone && ns < 32) sub[ns++] = feat(vw, persp, p, pop_lsb(gone));
-        while (come && na < 32) add[na++] = feat(vw, persp, p, pop_lsb(come));
-        e.pcs[p] = pos.pieces[p];
+    Bitboard set[24];
+    get_sets(pos, set);
+    for (int i = 0; i < n_sets(); i++) {
+        if (FeatSet == 0 && type_of(i) == KING) continue;
+        Bitboard gone = e.pcs[i] & ~set[i], come = set[i] & ~e.pcs[i];
+        while (gone && ns < 32) sub[ns++] = feat_set(vw, persp, i, pop_lsb(gone));
+        while (come && na < 32) add[na++] = feat_set(vw, persp, i, pop_lsb(come));
+        e.pcs[i] = set[i];
     }
     if (PsqtOn) psqt_apply(e.psqt, add, na, sub, ns);
     memcpy(acc.psqt[persp], e.psqt, sizeof(e.psqt));
@@ -146,6 +185,8 @@ void update(const Position& parent, Move m, const Position& child, const Accumul
     if (fl == MF_KCASTLE) { rFrom = to + 1; rTo = to - 1; }
     else if (fl == MF_QCASTLE) { rFrom = to - 2; rTo = to + 1; }
 
+    Bitboard ps[24], cs[24];
+    if (FeatSet == 2) { threat_sets(parent, ps); threat_sets(child, cs); }
     for (int persp = 0; persp < 2; persp++) {
         View vw = view_of(child, persp);
         if (pt == KING && persp == us) {
@@ -156,10 +197,17 @@ void update(const Position& parent, Move m, const Position& child, const Accumul
                 continue;
             }
         }
-        int add[2], sub[3], na = 0, ns = 0;
-        if (is_feature_piece(pc)) { sub[ns++] = feat(vw, persp, pc, from); add[na++] = feat(vw, persp, placed, to); }
-        if (capPc != NO_PIECE) sub[ns++] = feat(vw, persp, capPc, capSq);
-        if (rFrom >= 0) { sub[ns++] = feat(vw, persp, rook, rFrom); add[na++] = feat(vw, persp, rook, rTo); }
+        int add[32], sub[32], na = 0, ns = 0;
+        if (FeatSet == 2) {
+            for (int i = 0; i < 24; i++) {
+                for (Bitboard b = ps[i] & ~cs[i]; b && ns < 32;) sub[ns++] = feat_set(vw, persp, i, pop_lsb(b));
+                for (Bitboard b = cs[i] & ~ps[i]; b && na < 32;) add[na++] = feat_set(vw, persp, i, pop_lsb(b));
+            }
+        } else {
+            if (is_feature_piece(pc)) { sub[ns++] = feat(vw, persp, pc, from); add[na++] = feat(vw, persp, placed, to); }
+            if (capPc != NO_PIECE) sub[ns++] = feat(vw, persp, capPc, capSq);
+            if (rFrom >= 0) { sub[ns++] = feat(vw, persp, rook, rFrom); add[na++] = feat(vw, persp, rook, rTo); }
+        }
         const __m256i* src = (const __m256i*)in.v[persp];
         __m256i* dst = (__m256i*)out.v[persp];
         for (int c = 0; c < NNUE_ACC / 16; c++) {

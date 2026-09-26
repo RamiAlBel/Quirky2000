@@ -37,8 +37,8 @@ bool load(const std::string& path) {
     if (ok && v3) ok = fread(&cps, 4, 1, f) == 1;
     if (ok && v4) ok = fread(&psqtScale, 4, 1, f) == 1;
     int clampQ = scale > 0 ? (int)std::lround(1.0 / scale) : 0;
-    int nfeat = fs == 0 ? 40960 : nkb * 704;
-    ok = ok && (fs == 0 || (fs == 1 && (nkb == 8 || nkb == 16 || nkb == 32))) && rows == nfeat + 1 &&
+    int nfeat = fs == 0 ? 40960 : nkb * (fs == 2 ? 1408 : 704);
+    ok = ok && (fs == 0 || ((fs == 1 || fs == 2) && (nkb == 8 || nkb == 16 || nkb == 32))) && rows == nfeat + 1 &&
          acc == NNUE_ACC && h1 > 0 && h1 % 4 == 0 && h1 <= MAX_H1 && h2 >= 0 &&
          h2 % 8 == 0 && h2 <= MAX_H2 && nb >= 1 && nb <= MAX_NB && fa >= 0 && fa <= 2 && ha >= 0 && ha <= 2 &&
          (fa == 0 || clampQ * 32 <= 32767);
@@ -75,7 +75,7 @@ bool load(const std::string& path) {
     }
     FtScale = scale; CpScale = cps;
     FeatSet = fs; PsqtOn = psqt; NB_psqt = nb; PsqtScale = psqtScale;
-    if (fs == 1)
+    if (fs >= 1)
         for (int sq = 0; sq < 64; sq++) {
             int r = sq >> 3, fl = std::min(sq & 7, 7 - (sq & 7));
             KB[sq] = nkb == 32 ? r * 4 + fl : nkb == 16 ? std::min(r, 3) * 4 + fl : std::min(r, 1) * 4 + fl;
