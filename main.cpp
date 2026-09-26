@@ -144,6 +144,7 @@ int main(int argc, char** argv) {
             out_line("option name Threads type spin default 1 min 1 max 64");
             out_line("option name MultiPV type spin default 1 min 1 max 16");
             out_line("option name Ponder type check default false");
+            out_line("option name SyzygyPath type string default <empty>");
             out_line("option name EvalFile type string default lite.nnue");
             for (auto& t : tunables())
                 out_line("option name %s type spin default %d min %d max %d", t.name, t.def, t.lo, t.hi);
@@ -162,6 +163,9 @@ int main(int argc, char** argv) {
                 std::string path = value.find_first_of("/\\") == std::string::npos ? exe_dir() + "/" + value : value;
                 netLoaded = nnue::load(path);
                 out_line(netLoaded ? "info string loaded network %s" : "info string ERROR could not load network %s", path.c_str());
+            } else if (name == "SyzygyPath") {
+                int n = search::set_syzygy(value);
+                out_line("info string syzygy: %d-piece tables from %s", n, value.c_str());
             } else if (name == "Hash") search::set_hash_mb(std::stoul(value));
             else if (name == "Threads") search::set_threads(std::stoi(value));
             else if (name == "MultiPV") search::set_multipv(std::stoi(value));

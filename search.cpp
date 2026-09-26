@@ -1,6 +1,7 @@
 #include "search.h"
 #include "nnue.h"
 #include "tune.h"
+#include "../fathom/src/tbprobe.h"
 #include <atomic>
 #include <thread>
 #include <mutex>
@@ -33,6 +34,7 @@ TUNE(ProbCutMargin, 200, 50, 400);
 TUNE(UseRazor, 0, 0, 1);
 TUNE(RazorMargin, 400, 100, 1000);
 TUNE(RazorMul, 250, 50, 500);
+TUNE(SyzygyProbeDepth, 1, 1, 10);  // Syzygy is active when SyzygyPath is set (UCI string option)
 TUNE(UseTM, 0, 0, 1);        // soft/hard time limits + best-move stability
 TUNE(TmSoftDiv, 30, 10, 60);
 TUNE(TmIncPct, 75, 0, 100);
@@ -312,6 +314,38 @@ static inline int quiet_score(const Worker& w, const Position& pos, int ply, Mov
     }
     return s;
 }
+// ---- Syzygy (Fathom) ----
+static constexpr int TB_WIN_V = MATE_BOUND - 1;  // below mate scores, above any eval
+static std::atomic<uint64_t> tbHits{0};
+static inline bool tb_ok(const Position& p) {
+    return TB_LARGEST && !p.castling && popcount(p.occupied) <= (int)TB_LARGEST;
+}
+static inline unsigned tb_args_wdl(const Position& p) {
+    return tb_probe_wdl(p.byColor[WHITE], p.byColor[BLACK], p.pcs(WHITE, KING) | p.pcs(BLACK, KING),
+                        p.pcs(WHITE, QUEEN) | p.pcs(BLACK, QUEEN), p.pcs(WHITE, ROOK) | p.pcs(BLACK, ROOK),
+                        p.pcs(WHITE, BISHOP) | p.pcs(BLACK, BISHOP), p.pcs(WHITE, KNIGHT) | p.pcs(BLACK, KNIGHT),
+                        p.pcs(WHITE, PAWN) | p.pcs(BLACK, PAWN), 0, 0, p.ep < 0 ? 0 : p.ep, p.stm == WHITE);
+}
+// root: the DTZ-optimal move that keeps the tablebase result (0 if not a tablebase position)
+static Move tb_root_move(const Position& p) {
+    if (!tb_ok(p)) return 0;
+    unsigned r = tb_probe_root(p.byColor[WHITE], p.byColor[BLACK], p.pcs(WHITE, KING) | p.pcs(BLACK, KING),
+                               p.pcs(WHITE, QUEEN) | p.pcs(BLACK, QUEEN), p.pcs(WHITE, ROOK) | p.pcs(BLACK, ROOK),
+                               p.pcs(WHITE, BISHOP) | p.pcs(BLACK, BISHOP), p.pcs(WHITE, KNIGHT) | p.pcs(BLACK, KNIGHT),
+                               p.pcs(WHITE, PAWN) | p.pcs(BLACK, PAWN), p.halfmove, 0, p.ep < 0 ? 0 : p.ep,
+                               p.stm == WHITE, nullptr);
+    if (r == TB_RESULT_FAILED || r == TB_RESULT_CHECKMATE || r == TB_RESULT_STALEMATE) return 0;
+    static const int promoMap[5] = {-1, QUEEN, ROOK, BISHOP, KNIGHT};
+    int from = TB_GET_FROM(r), to = TB_GET_TO(r), pr = promoMap[TB_GET_PROMOTES(r)];
+    MoveList legal;
+    generate_legal(p, legal);
+    for (int i = 0; i < legal.size; i++) {
+        Move m = legal.moves[i];
+        if (from_sq(m) == from && to_sq(m) == to && (is_promo(m) ? promo_type(m) == pr : pr < 0)) return m;
+    }
+    return 0;
+}
+
 static inline int victim_of(const Position& pos, Move m) {
     if (flags_of(m) == MF_EP) return PAWN;
     return pos.board[to_sq(m)] != NO_PIECE ? type_of(pos.board[to_sq(m)]) : 5;
@@ -490,6 +524,20 @@ static int negamax(Worker& w, int alpha, int beta, int depth, int ply, bool cutN
     if (!PV && !excl && ttHit && tt.depth >= depth && ttValue != VALUE_NONE &&
         (tt.bound & (ttValue >= beta ? BOUND_LOWER : BOUND_UPPER)))
         return ttValue;
+
+    // Syzygy WDL: exact result for <= TB_LARGEST pieces right after a capture/pawn move
+    if (!root && !excl && pos.halfmove == 0 && depth >= SyzygyProbeDepth && tb_ok(pos)) {
+        unsigned r = tb_args_wdl(pos);
+        if (r != TB_RESULT_FAILED) {
+            tbHits.fetch_add(1, std::memory_order_relaxed);
+            int v = r == TB_WIN ? TB_WIN_V - ply : r == TB_LOSS ? -TB_WIN_V + ply : 0;  // cursed/blessed = draw
+            int b = r == TB_WIN ? BOUND_LOWER : r == TB_LOSS ? BOUND_UPPER : BOUND_EXACT;
+            if (b == BOUND_EXACT || (b == BOUND_LOWER ? v >= beta : v <= alpha)) {
+                tt_store(pos.key, 0, v, VALUE_NONE, std::min(MAX_PLY - 1, depth + 6), b);
+                return v;
+            }
+        }
+    }
 
     int eval, rawEval;
     if (inCheck) {
@@ -719,9 +767,9 @@ static void report(const Worker& w, int depth) {
         } else snprintf(sc, sizeof sc, "cp %d", v);
         std::string pv;
         for (Move m : rm.pv) { pv += move_to_uci(m); pv += ' '; }
-        out_line("info depth %d seldepth %d multipv %d score %s nodes %llu nps %llu hashfull %d time %lld pv %s",
+        out_line("info depth %d seldepth %d multipv %d score %s nodes %llu nps %llu hashfull %d tbhits %llu time %lld pv %s",
                  depth, rm.selDepth, i + 1, sc, (unsigned long long)nodes,
-                 (unsigned long long)(nodes * 1000 / ms), hf, (long long)ms, pv.c_str());
+                 (unsigned long long)(nodes * 1000 / ms), hf, (unsigned long long)tbHits.load(), (long long)ms, pv.c_str());
     }
 }
 
@@ -814,6 +862,11 @@ void set_threads(int n) {
     }
 }
 void set_multipv(int n) { optMultiPV = std::max(1, n); }
+int set_syzygy(const std::string& path) {
+    wait();
+    tb_init(path.c_str());
+    return (int)TB_LARGEST;
+}
 int threads() { return optThreads; }
 int multipv() { return optMultiPV; }
 
@@ -844,6 +897,8 @@ void start(const Position& root, const std::vector<uint64_t>& history, const Lim
 
     MoveList legal;
     generate_legal(root, legal);
+    if (Move tbm = tb_root_move(root)) { legal.size = 1; legal.moves[0] = tbm; }
+    tbHits = 0;
     for (auto* w : workers) {
         w->pos[0] = root;
         nnue::refresh_all(root, w->acc[0]);

@@ -23,6 +23,7 @@ void set_hash_mb(size_t mb);
 void clear_hash();
 void set_threads(int n);
 void set_multipv(int n);
+int set_syzygy(const std::string& path);  // returns the largest piece count available (0 = none)
 int threads();
 int multipv();
 // `history` = zobrist keys of every position in the game so far, ending with root's.
