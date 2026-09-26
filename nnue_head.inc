@@ -24,22 +24,27 @@ bool load(const std::string& path) {
     FILE* f = fopen(path.c_str(), "rb");
     if (!f) return false;
     char magic[4];
-    int acc = 0, rows = 0, h1 = 0, h2 = 0, nb = 1, fa = 0, ha = 0;
-    float scale = 0, cps = 400.0f;
+    int acc = 0, rows = 0, h1 = 0, h2 = 0, nb = 1, fa = 0, ha = 0, fs = 0, nkb = 32, psqt = 0;
+    float scale = 0, cps = 400.0f, psqtScale = 0;
     bool ok = fread(magic, 1, 4, f) == 4;
-    bool v3 = ok && memcmp(magic, "LNN3", 4) == 0, v2 = ok && memcmp(magic, "LNN2", 4) == 0;
+    bool v4 = ok && memcmp(magic, "LNN4", 4) == 0;
+    bool v3 = ok && (memcmp(magic, "LNN3", 4) == 0 || v4), v2 = ok && memcmp(magic, "LNN2", 4) == 0;
     ok = (v2 || v3) && fread(&acc, 4, 1, f) == 1 && fread(&rows, 4, 1, f) == 1 && fread(&h1, 4, 1, f) == 1 &&
          fread(&h2, 4, 1, f) == 1;
     if (ok && v3) ok = fread(&nb, 4, 1, f) == 1 && fread(&fa, 4, 1, f) == 1 && fread(&ha, 4, 1, f) == 1;
+    if (ok && v4) ok = fread(&fs, 4, 1, f) == 1 && fread(&nkb, 4, 1, f) == 1 && fread(&psqt, 4, 1, f) == 1;
     ok = ok && fread(&scale, 4, 1, f) == 1;
     if (ok && v3) ok = fread(&cps, 4, 1, f) == 1;
+    if (ok && v4) ok = fread(&psqtScale, 4, 1, f) == 1;
     int clampQ = scale > 0 ? (int)std::lround(1.0 / scale) : 0;
-    ok = ok && acc == NNUE_ACC && rows == 40961 && h1 > 0 && h1 % 4 == 0 && h1 <= MAX_H1 && h2 >= 0 &&
+    int nfeat = fs == 0 ? 40960 : nkb * 704;
+    ok = ok && (fs == 0 || (fs == 1 && (nkb == 8 || nkb == 16 || nkb == 32))) && rows == nfeat + 1 &&
+         acc == NNUE_ACC && h1 > 0 && h1 % 4 == 0 && h1 <= MAX_H1 && h2 >= 0 &&
          h2 % 8 == 0 && h2 <= MAX_H2 && nb >= 1 && nb <= MAX_NB && fa >= 0 && fa <= 2 && ha >= 0 && ha <= 2 &&
          (fa == 0 || clampQ * 32 <= 32767);
     if (!ok) {
         fclose(f);
-        fprintf(stderr, "nnue: %s is not an LNN2/LNN3 net of width %d this engine supports\n", path.c_str(), NNUE_ACC);
+        fprintf(stderr, "nnue: %s is not an LNN2/3/4 net of width %d this engine supports\n", path.c_str(), NNUE_ACC);
         return false;
     }
     int l1in = fa == 2 ? acc : 2 * acc, mult = ha == 2 ? 2 : 1, outIn = (h2 ? h2 : h1) * mult;
@@ -47,7 +52,10 @@ bool load(const std::string& path) {
         ow(nb * outIn), ob(nb);
     if (FT) aligned_free64(FT);
     FT = (ft_t*)aligned_alloc64((size_t)rows * NNUE_ACC * sizeof(ft_t));
+    if (PSQT) { free(PSQT); PSQT = nullptr; }
+    std::vector<int32_t> ps(psqt ? (size_t)rows * nb : 0);
     ok = fread(FTB, 2, acc, f) == (size_t)acc && fread(FT, sizeof(ft_t), (size_t)rows * acc, f) == (size_t)rows * acc &&
+         fread(ps.data(), 4, ps.size(), f) == ps.size() &&
          fread(l1w.data(), 4, l1w.size(), f) == l1w.size() && fread(l1b.data(), 4, l1b.size(), f) == l1b.size() &&
          fread(l2w.data(), 4, l2w.size(), f) == l2w.size() && fread(l2b.data(), 4, l2b.size(), f) == l2b.size() &&
          fread(ow.data(), 4, ow.size(), f) == ow.size() && fread(ob.data(), 4, ob.size(), f) == ob.size();
@@ -55,6 +63,16 @@ bool load(const std::string& path) {
     if (!ok) return false;
 
     FtScale = scale; CpScale = cps;
+    FeatSet = fs; PsqtOn = psqt; NB_psqt = nb; PsqtScale = psqtScale;
+    if (fs == 1)
+        for (int sq = 0; sq < 64; sq++) {
+            int r = sq >> 3, fl = std::min(sq & 7, 7 - (sq & 7));
+            KB[sq] = nkb == 32 ? r * 4 + fl : nkb == 16 ? std::min(r, 3) * 4 + fl : std::min(r, 1) * 4 + fl;
+        }
+    if (psqt) {
+        PSQT = (int32_t*)malloc(ps.size() * 4);
+        memcpy(PSQT, ps.data(), ps.size() * 4);
+    }
     NetGen++;
     H1 = h1; H1p = (h1 + 7) / 8 * 8; H2 = h2; NB = nb; FtAct = fa; HidAct = ha; L1In = l1in; Mult = mult;
     RequantMul = (int16_t)std::lround(FtScale * 127.0f * 32768.0f);
@@ -86,6 +104,10 @@ bool load(const std::string& path) {
         OutB[b] = ob[b];
     }
     return true;
+}
+
+static inline float psqt_term(const Accumulator& acc, int stm, int b) {
+    return PsqtOn ? (acc.psqt[stm][b] - acc.psqt[stm ^ 1][b]) * PsqtScale * 0.5f : 0.0f;
 }
 
 static inline int bucket(int pieces) {
@@ -179,7 +201,7 @@ double evaluate_quant_raw(const Accumulator& acc, int stm, int pieces) {
     int o0 = 0;
     for (; o0 + 8 <= H1; o0 += 8) l1_rows<8>(x, b, o0, l1out);
     if (o0 < H1) l1_rows<4>(x, b, o0, l1out);
-    return tail(l1out, b);
+    return tail(l1out, b) + psqt_term(acc, stm, b);
 }
 
 double evaluate_float_raw(const Accumulator& acc, int stm, int pieces) {
@@ -202,7 +224,7 @@ double evaluate_float_raw(const Accumulator& acc, int stm, int pieces) {
         for (int i = 0; i < L1In; i++) s += (double)x[i] * w[i];
         l1out[o] = (float)s;
     }
-    return tail(l1out, b);
+    return tail(l1out, b) + psqt_term(acc, stm, b);
 }
 
 int evaluate(const Accumulator& acc, int stm, int pieces) {

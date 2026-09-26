@@ -12,15 +12,29 @@ static ft_t* FT = nullptr;                            // [rows][NNUE_ACC]
 alignas(64) static int16_t FTB[NNUE_ACC];              // feature bias (all zero for LNN1)
 static float FtScale = 0;
 
-static inline int feature(int persp, int ksqRel, int pc, int sq) {
-    int s = persp == BLACK ? (sq ^ 56) : sq;
-    int rel = color_of(pc) == persp ? 0 : 1;
-    return ksqRel * 640 + (rel * 5 + type_of(pc)) * 64 + s;
+// ---- feature sets ----
+// 0 HalfKP: king square x 10 non-king planes x 64 (kings are not features)
+// 1 HKB (LNN4): king bucket x 11 planes (own P..Q, opp P..Q, both kings) x 64, board mirrored so the
+//   perspective's king is on files a-d; the accumulator is refreshed when the king changes bucket or side
+static int FeatSet = 0, PsqtOn = 0, NB_psqt = 1;
+static int KB[64];
+static int32_t* PSQT = nullptr;  // [rows][NB_psqt]
+static float PsqtScale = 0;
+
+struct View { int base, flip, key; };  // key: refresh-cache slot (0..63)
+static inline View view_of(const Position& pos, int persp) {
+    int k = pos.king_sq(persp) ^ (persp == BLACK ? 56 : 0);
+    if (FeatSet == 0) return {k * 640, persp == BLACK ? 56 : 0, k};
+    int mirror = (k & 7) >= 4 ? 7 : 0;
+    int b = KB[k ^ mirror];
+    return {b * 704, (persp == BLACK ? 56 : 0) ^ mirror, b * 2 + (mirror ? 1 : 0)};
 }
-static inline int king_rel(const Position& pos, int persp) {
-    int k = pos.king_sq(persp);
-    return persp == BLACK ? (k ^ 56) : k;
+static inline int feat(const View& v, int persp, int pc, int sq) {
+    int rel = color_of(pc) == persp ? 0 : 1, t = type_of(pc);
+    int plane = t == KING ? 10 : rel * 5 + t;
+    return v.base + plane * 64 + (sq ^ v.flip);
 }
+static inline bool is_feature_piece(int pc) { return FeatSet == 1 || type_of(pc) != KING; }
 static inline __m256i row16(int idx, int j) {
 #ifdef NNUE_LNN2
     return _mm256_load_si256((const __m256i*)(FT + (size_t)idx * NNUE_ACC + j));
@@ -28,12 +42,16 @@ static inline __m256i row16(int idx, int j) {
     return _mm256_cvtepi8_epi16(_mm_load_si128((const __m128i*)(FT + (size_t)idx * NNUE_ACC + j)));
 #endif
 }
+static inline void psqt_apply(int32_t* dst, const int* add, int na, const int* sub, int ns) {
+    for (int k = 0; k < na; k++) for (int b = 0; b < NB_psqt; b++) dst[b] += PSQT[(size_t)add[k] * NB_psqt + b];
+    for (int k = 0; k < ns; k++) for (int b = 0; b < NB_psqt; b++) dst[b] -= PSQT[(size_t)sub[k] * NB_psqt + b];
+}
 
 void refresh(const Position& pos, Accumulator& acc, int persp) {
-    int ksq = king_rel(pos, persp);
+    View vw = view_of(pos, persp);
     int idx[32], n = 0;
-    Bitboard b = pos.occupied & ~(pos.pcs(WHITE, KING) | pos.pcs(BLACK, KING));
-    while (b) { int s = pop_lsb(b); idx[n++] = feature(persp, ksq, pos.board[s], s); }
+    Bitboard b = FeatSet == 1 ? pos.occupied : pos.occupied & ~(pos.pcs(WHITE, KING) | pos.pcs(BLACK, KING));
+    while (b) { int s = pop_lsb(b); idx[n++] = feat(vw, persp, pos.board[s], s); }
     // 4 registers x 16 lanes = 64 lanes per pass keeps sums in registers across all pieces
     for (int j = 0; j < NNUE_ACC; j += 64) {
         const __m256i* bias = (const __m256i*)(FTB + j);
@@ -49,6 +67,8 @@ void refresh(const Position& pos, Accumulator& acc, int persp) {
         _mm256_store_si256(out, a0); _mm256_store_si256(out + 1, a1);
         _mm256_store_si256(out + 2, a2); _mm256_store_si256(out + 3, a3);
     }
+    memset(acc.psqt[persp], 0, sizeof(acc.psqt[persp]));
+    if (PsqtOn) psqt_apply(acc.psqt[persp], idx, n, nullptr, 0);
 }
 
 // Refresh cache ("Finny table"): per thread, per perspective and king square, the accumulator and piece
@@ -57,6 +77,7 @@ void refresh(const Position& pos, Accumulator& acc, int persp) {
 static int NetGen = 0;  // bumped on load: invalidates every thread's cache
 struct alignas(64) FinnyEntry {
     int16_t acc[NNUE_ACC];
+    int32_t psqt[8];
     Bitboard pcs[12];
 };
 static thread_local FinnyEntry Finny[2][64];
@@ -65,19 +86,25 @@ static thread_local int FinnyGen = -1;
 static void refresh_cached(const Position& pos, Accumulator& acc, int persp) {
     if (FinnyGen != NetGen) {
         for (auto& side : Finny)
-            for (auto& e : side) { memcpy(e.acc, FTB, sizeof(e.acc)); memset(e.pcs, 0, sizeof(e.pcs)); }
+            for (auto& e : side) {
+                memcpy(e.acc, FTB, sizeof(e.acc));
+                memset(e.psqt, 0, sizeof(e.psqt));
+                memset(e.pcs, 0, sizeof(e.pcs));
+            }
         FinnyGen = NetGen;
     }
-    int ksq = king_rel(pos, persp);
-    FinnyEntry& e = Finny[persp][ksq];
+    View vw = view_of(pos, persp);
+    FinnyEntry& e = Finny[persp][vw.key];
     int add[32], sub[32], na = 0, ns = 0;
     for (int p = 0; p < 12; p++) {
-        if (type_of(p) == KING) continue;
+        if (!is_feature_piece(p)) continue;
         Bitboard gone = e.pcs[p] & ~pos.pieces[p], come = pos.pieces[p] & ~e.pcs[p];
-        while (gone && ns < 32) sub[ns++] = feature(persp, ksq, p, pop_lsb(gone));
-        while (come && na < 32) add[na++] = feature(persp, ksq, p, pop_lsb(come));
+        while (gone && ns < 32) sub[ns++] = feat(vw, persp, p, pop_lsb(gone));
+        while (come && na < 32) add[na++] = feat(vw, persp, p, pop_lsb(come));
         e.pcs[p] = pos.pieces[p];
     }
+    if (PsqtOn) psqt_apply(e.psqt, add, na, sub, ns);
+    memcpy(acc.psqt[persp], e.psqt, sizeof(e.psqt));
     for (int j = 0; j < NNUE_ACC; j += 64) {
         __m256i* c = (__m256i*)(e.acc + j);
         __m256i a0 = _mm256_load_si256(c), a1 = _mm256_load_si256(c + 1),
@@ -120,16 +147,19 @@ void update(const Position& parent, Move m, const Position& child, const Accumul
     else if (fl == MF_QCASTLE) { rFrom = to - 2; rTo = to + 1; }
 
     for (int persp = 0; persp < 2; persp++) {
+        View vw = view_of(child, persp);
         if (pt == KING && persp == us) {
-            if (UseFinny) refresh_cached(child, out, persp);
-            else refresh(child, out, persp);
-            continue;
+            View pv = view_of(parent, persp);
+            if (FeatSet == 0 || pv.base != vw.base || pv.flip != vw.flip) {
+                if (UseFinny) refresh_cached(child, out, persp);
+                else refresh(child, out, persp);
+                continue;
+            }
         }
-        int ksq = king_rel(child, persp);
-        int add[2], sub[2], na = 0, ns = 0;
-        if (pt != KING) { sub[ns++] = feature(persp, ksq, pc, from); add[na++] = feature(persp, ksq, placed, to); }
-        if (capPc != NO_PIECE) sub[ns++] = feature(persp, ksq, capPc, capSq);
-        if (rFrom >= 0) { sub[ns++] = feature(persp, ksq, rook, rFrom); add[na++] = feature(persp, ksq, rook, rTo); }
+        int add[2], sub[3], na = 0, ns = 0;
+        if (is_feature_piece(pc)) { sub[ns++] = feat(vw, persp, pc, from); add[na++] = feat(vw, persp, placed, to); }
+        if (capPc != NO_PIECE) sub[ns++] = feat(vw, persp, capPc, capSq);
+        if (rFrom >= 0) { sub[ns++] = feat(vw, persp, rook, rFrom); add[na++] = feat(vw, persp, rook, rTo); }
         const __m256i* src = (const __m256i*)in.v[persp];
         __m256i* dst = (__m256i*)out.v[persp];
         for (int c = 0; c < NNUE_ACC / 16; c++) {
@@ -138,6 +168,8 @@ void update(const Position& parent, Move m, const Position& child, const Accumul
             for (int k = 0; k < na; k++) v = _mm256_add_epi16(v, row16(add[k], c * 16));
             _mm256_store_si256(dst + c, v);
         }
+        memcpy(out.psqt[persp], in.psqt[persp], sizeof(out.psqt[persp]));
+        if (PsqtOn) psqt_apply(out.psqt[persp], add, na, sub, ns);
     }
 }
 

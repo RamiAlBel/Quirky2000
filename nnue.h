@@ -25,6 +25,7 @@ static_assert(NNUE_ACC % 64 == 0, "accumulator width must be a multiple of 64");
 
 struct alignas(64) Accumulator {
     int16_t v[2][NNUE_ACC];
+    int32_t psqt[2][8];  // LNN4 material shortcut sums per output bucket (zero otherwise)
 };
 
 namespace nnue {
