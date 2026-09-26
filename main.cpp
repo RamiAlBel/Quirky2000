@@ -3,6 +3,7 @@
 #include "position.h"
 #include "nnue.h"
 #include "search.h"
+#include "tune.h"
 #include <iostream>
 #include <sstream>
 #include <string>
@@ -10,6 +11,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
@@ -141,7 +143,10 @@ int main(int argc, char** argv) {
             out_line("option name Hash type spin default 256 min 1 max 16384");
             out_line("option name Threads type spin default 1 min 1 max 64");
             out_line("option name MultiPV type spin default 1 min 1 max 16");
+            out_line("option name Ponder type check default false");
             out_line("option name EvalFile type string default lite.nnue");
+            for (auto& t : tunables())
+                out_line("option name %s type spin default %d min %d max %d", t.name, t.def, t.lo, t.hi);
             out_line("uciok");
         } else if (tok == "isready") {
             out_line("readyok");
@@ -160,6 +165,11 @@ int main(int argc, char** argv) {
             } else if (name == "Hash") search::set_hash_mb(std::stoul(value));
             else if (name == "Threads") search::set_threads(std::stoi(value));
             else if (name == "MultiPV") search::set_multipv(std::stoi(value));
+            else {
+                char* end = nullptr;
+                long v = std::strtol(value.c_str(), &end, 10);
+                if (end == value.c_str() || !set_tunable(name, (int)v)) out_line("info string ignored option %s", name.c_str());
+            }
         } else if (tok == "ucinewgame") {
             search::stop(); search::wait();
             search::clear_hash();
@@ -175,6 +185,7 @@ int main(int argc, char** argv) {
             int64_t wtime = -1, btime = -1, winc = 0, binc = 0;
             while (is >> tok) {
                 if (tok == "infinite") lim.infinite = true;
+                else if (tok == "ponder") lim.ponder = true;
                 else if (tok == "depth") is >> lim.depth;
                 else if (tok == "movetime") is >> lim.movetime;
                 else if (tok == "nodes") is >> lim.nodes;
@@ -184,8 +195,15 @@ int main(int argc, char** argv) {
                 else if (tok == "binc") is >> binc;
             }
             int64_t myTime = pos.stm == WHITE ? wtime : btime, myInc = pos.stm == WHITE ? winc : binc;
-            if (myTime >= 0 && !lim.movetime) lim.movetime = std::max<int64_t>(10, std::min(myTime / 25 + myInc * 3 / 4, myTime - 50));
+            if (myTime >= 0 && !lim.movetime) {
+                lim.movetime = std::max<int64_t>(10, std::min(myTime / 25 + myInc * 3 / 4, myTime - 50));
+                lim.fromClock = true;
+                lim.time = myTime;
+                lim.inc = myInc;
+            }
             search::start(pos, hist, lim);
+        } else if (tok == "ponderhit") {
+            search::ponderhit();
         } else if (tok == "stop") {
             search::stop(); search::wait();
         } else if (tok == "quit") {

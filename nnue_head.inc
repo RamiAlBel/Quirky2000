@@ -55,6 +55,7 @@ bool load(const std::string& path) {
     if (!ok) return false;
 
     FtScale = scale; CpScale = cps;
+    NetGen++;
     H1 = h1; H1p = (h1 + 7) / 8 * 8; H2 = h2; NB = nb; FtAct = fa; HidAct = ha; L1In = l1in; Mult = mult;
     RequantMul = (int16_t)std::lround(FtScale * 127.0f * 32768.0f);
     ClampQ = (int16_t)clampQ;

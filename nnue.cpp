@@ -4,6 +4,8 @@
 #include <cstdlib>
 #include <vector>
 
+extern int UseFinny;  // search.cpp tunable
+
 namespace nnue {
 
 static ft_t* FT = nullptr;                            // [rows][NNUE_ACC]
@@ -49,6 +51,57 @@ void refresh(const Position& pos, Accumulator& acc, int persp) {
     }
 }
 
+// Refresh cache ("Finny table"): per thread, per perspective and king square, the accumulator and piece
+// sets it was last refreshed with. A king-move refresh then only applies the pieces that changed since.
+// Integer add/sub wrap mod 2^16, so the result is bit-identical to a full refresh.
+static int NetGen = 0;  // bumped on load: invalidates every thread's cache
+struct alignas(64) FinnyEntry {
+    int16_t acc[NNUE_ACC];
+    Bitboard pcs[12];
+};
+static thread_local FinnyEntry Finny[2][64];
+static thread_local int FinnyGen = -1;
+
+static void refresh_cached(const Position& pos, Accumulator& acc, int persp) {
+    if (FinnyGen != NetGen) {
+        for (auto& side : Finny)
+            for (auto& e : side) { memcpy(e.acc, FTB, sizeof(e.acc)); memset(e.pcs, 0, sizeof(e.pcs)); }
+        FinnyGen = NetGen;
+    }
+    int ksq = king_rel(pos, persp);
+    FinnyEntry& e = Finny[persp][ksq];
+    int add[32], sub[32], na = 0, ns = 0;
+    for (int p = 0; p < 12; p++) {
+        if (type_of(p) == KING) continue;
+        Bitboard gone = e.pcs[p] & ~pos.pieces[p], come = pos.pieces[p] & ~e.pcs[p];
+        while (gone && ns < 32) sub[ns++] = feature(persp, ksq, p, pop_lsb(gone));
+        while (come && na < 32) add[na++] = feature(persp, ksq, p, pop_lsb(come));
+        e.pcs[p] = pos.pieces[p];
+    }
+    for (int j = 0; j < NNUE_ACC; j += 64) {
+        __m256i* c = (__m256i*)(e.acc + j);
+        __m256i a0 = _mm256_load_si256(c), a1 = _mm256_load_si256(c + 1),
+                a2 = _mm256_load_si256(c + 2), a3 = _mm256_load_si256(c + 3);
+        for (int k = 0; k < ns; k++) {
+            a0 = _mm256_sub_epi16(a0, row16(sub[k], j));
+            a1 = _mm256_sub_epi16(a1, row16(sub[k], j + 16));
+            a2 = _mm256_sub_epi16(a2, row16(sub[k], j + 32));
+            a3 = _mm256_sub_epi16(a3, row16(sub[k], j + 48));
+        }
+        for (int k = 0; k < na; k++) {
+            a0 = _mm256_add_epi16(a0, row16(add[k], j));
+            a1 = _mm256_add_epi16(a1, row16(add[k], j + 16));
+            a2 = _mm256_add_epi16(a2, row16(add[k], j + 32));
+            a3 = _mm256_add_epi16(a3, row16(add[k], j + 48));
+        }
+        _mm256_store_si256(c, a0); _mm256_store_si256(c + 1, a1);
+        _mm256_store_si256(c + 2, a2); _mm256_store_si256(c + 3, a3);
+        __m256i* out = (__m256i*)(acc.v[persp] + j);
+        _mm256_store_si256(out, a0); _mm256_store_si256(out + 1, a1);
+        _mm256_store_si256(out + 2, a2); _mm256_store_si256(out + 3, a3);
+    }
+}
+
 void refresh_all(const Position& pos, Accumulator& acc) {
     refresh(pos, acc, WHITE);
     refresh(pos, acc, BLACK);
@@ -67,7 +120,11 @@ void update(const Position& parent, Move m, const Position& child, const Accumul
     else if (fl == MF_QCASTLE) { rFrom = to - 2; rTo = to + 1; }
 
     for (int persp = 0; persp < 2; persp++) {
-        if (pt == KING && persp == us) { refresh(child, out, persp); continue; }
+        if (pt == KING && persp == us) {
+            if (UseFinny) refresh_cached(child, out, persp);
+            else refresh(child, out, persp);
+            continue;
+        }
         int ksq = king_rel(child, persp);
         int add[2], sub[2], na = 0, ns = 0;
         if (pt != KING) { sub[ns++] = feature(persp, ksq, pc, from); add[na++] = feature(persp, ksq, placed, to); }
@@ -133,6 +190,7 @@ bool load(const std::string& path) {
         return false;
     }
     FtScale = scale;
+    NetGen++;
     if (FT) aligned_free64(FT);
     FT = (ft_t*)aligned_alloc64((size_t)rows * NNUE_ACC * sizeof(ft_t));
     std::vector<float> l1w(h1 * 2 * acc), l2w(h2 * h1);

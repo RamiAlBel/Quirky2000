@@ -12,6 +12,9 @@ struct Limits {
     int64_t movetime = 0;
     uint64_t nodes = 0;
     bool infinite = false;
+    bool ponder = false;     // "go ponder": search without time checks until ponderhit/stop
+    bool fromClock = false;  // movetime was derived from wtime/btime (time management may override it)
+    int64_t time = -1, inc = 0;
 };
 
 namespace search {
@@ -25,6 +28,7 @@ int multipv();
 // `history` = zobrist keys of every position in the game so far, ending with root's.
 void start(const Position& root, const std::vector<uint64_t>& history, const Limits& lim);
 void stop();
+void ponderhit();
 void wait();
 // Synchronous fixed-depth search used by `bench`; returns nodes searched.
 uint64_t bench_one(const Position& root, int depth, bool quiet);
