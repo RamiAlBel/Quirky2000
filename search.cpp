@@ -773,7 +773,7 @@ static int negamax(Worker& w, int alpha, int beta, int depth, int ply, bool cutN
 
     int bound = bestValue >= beta ? BOUND_LOWER : (PV && bestMove ? BOUND_EXACT : BOUND_UPPER);
     // correction history: learn how far the static eval of this pawn structure is off
-    if (UseCorrHist && !inCheck && !excl && (!bestMove || is_quiet(bestMove)) && std::abs(bestValue) < MATE_BOUND &&
+    if (UseCorrHist && !inCheck && !excl && (!bestMove || is_quiet(bestMove)) && std::abs(bestValue) < TB_WIN_V - MAX_PLY &&
         !(bound == BOUND_LOWER && bestValue <= w.staticEval[ply]) && !(bound == BOUND_UPPER && bestValue >= w.staticEval[ply])) {
         int16_t& c = w.corr[us][pawn_idx(pos)];
         int nv = c + (bestValue - w.staticEval[ply]) * 16 * std::min(depth + 1, 16) / CorrDiv;
