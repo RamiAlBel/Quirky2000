@@ -79,6 +79,14 @@ TUNE(NtmBase, 150, 100, 250);
 TUNE(NtmMul, 135, 50, 250);
 TUNE(UseRfpBlend, 0, 0, 1);  // reverse futility returns (eval+beta)/2 instead of eval
 TUNE(UseLmrTtCap, 0, 0, 1);  // quiets reduced one more ply when the TT move is a capture
+TUNE(UsePawnHist, 0, 0, 1);  // pawn history: quiet score by (pawn structure, piece, to)
+TUNE(UsePriorBonus, 0, 0, 1); // node fails low -> the parent's quiet move that led here gets a history bonus
+TUNE(UseAspFH, 0, 0, 1);     // aspiration fail high -> re-search one ply shallower (cumulative)
+TUNE(UseCapFut, 0, 0, 1);    // futility pruning for captures in the main search
+TUNE(CapFutBase, 200, 50, 500);
+TUNE(CapFutMul, 150, 50, 400);
+TUNE(UseDeeper, 0, 0, 1);    // LMR re-search one ply deeper / shallower depending on how much it surprised
+TUNE(DeeperMargin, 40, 10, 150);
 
 static std::mutex outMutex;
 static bool quietOutput = false;
@@ -198,7 +206,8 @@ struct Worker {
     Move counter[12][64];
     int16_t corr[2][16384];
     int16_t corrP[2][16384], corrN[2][2][16384];  // v2: [stm][pawn key], [stm][colour][non-pawn key]
-    int dext[MAX_PLY + 4];  // double extensions on the current line
+    int dext[MAX_PLY + 4];
+    int16_t phist[1024][12][64];  // [pawn key][piece][to]  // double extensions on the current line
     int16_t cont[12][64][12][64];  // [prev piece][prev to][piece][to]
     int capt[12][64][6];           // [piece][to][victim type; 5 = none (promotion)]
     Move excluded[MAX_PLY + 4];
@@ -376,8 +385,10 @@ static inline int corrected(const Worker& w, const Position& p, int raw) {
 static inline int cont_idx_ok(const Worker& w, int ply, int back) {
     return ply >= back && w.currentMove[ply - back] && w.movedPiece[ply - back] < 12;
 }
+static inline int phist_idx(const Position& p) { return pawn_idx(p) >> 4; }
 static inline int quiet_score(const Worker& w, const Position& pos, int ply, Move m) {
     int s = w.hist[pos.stm][from_sq(m)][to_sq(m)];
+    if (UsePawnHist) s += w.phist[phist_idx(pos)][pos.board[from_sq(m)]][to_sq(m)];
     if (UseContHist) {
         int pc = pos.board[from_sq(m)], to = to_sq(m);
         static const int backs[3] = {1, 2, 4};
@@ -591,7 +602,7 @@ static int negamax(Worker& w, int alpha, int beta, int depth, int ply, bool cutN
     }
 
     const bool inCheck = pos.checkers != 0;
-    const int us = pos.stm;
+    const int us = pos.stm, alphaOrig = alpha;
     TTData tt;
     bool ttHit = tt_probe(pos.key, tt);
     int ttValue = ttHit ? value_from_tt(tt.score, ply) : VALUE_NONE;
@@ -718,8 +729,11 @@ static int negamax(Worker& w, int alpha, int beta, int depth, int ply, bool cutN
                 if (!inCheck && lmrDepth < 7 && w.staticEval[ply] + FutBase + FutMul * lmrDepth <= alpha) continue;
                 if (UseHistPrune && lmrDepth < HpDepth && h < -HpMul * depth) continue;
                 if (lmrDepth < 8 && !see_ge(pos, m, -SeeQuiet * lmrDepth * lmrDepth)) continue;
-            } else if (depth < 7 && !see_ge(pos, m, -SeeNoisy * depth)) {
-                continue;
+            } else {
+                if (UseCapFut && !inCheck && lmrDepth < 7 && !is_promo(m) &&
+                    w.staticEval[ply] + CapFutBase + CapFutMul * lmrDepth + SeeVal[victim_of(pos, m) == 5 ? 0 : victim_of(pos, m)] <= alpha)
+                    continue;
+                if (depth < 7 && !see_ge(pos, m, -SeeNoisy * depth)) continue;
             }
         }
 
@@ -758,8 +772,10 @@ static int negamax(Worker& w, int alpha, int beta, int depth, int ply, bool cutN
             r -= h / HistDiv;
             int d = std::clamp(newDepth - r, 1, newDepth);
             v = -negamax<false>(w, -(alpha + 1), -alpha, d, ply + 1, true);
-            if (v > alpha && d < newDepth)
-                v = -negamax<false>(w, -(alpha + 1), -alpha, newDepth, ply + 1, !cutNode);
+            if (v > alpha && d < newDepth) {
+                if (UseDeeper) newDepth += (v > bestValue + DeeperMargin + 2 * newDepth) - (v < bestValue + newDepth);
+                if (d < newDepth) v = -negamax<false>(w, -(alpha + 1), -alpha, newDepth, ply + 1, !cutNode);
+            }
         } else if (!PV || moveCount > 1) {
             v = -negamax<false>(w, -(alpha + 1), -alpha, newDepth, ply + 1, !cutNode);
         }
@@ -809,6 +825,11 @@ static int negamax(Worker& w, int alpha, int beta, int depth, int ply, bool cutN
                 w.counter[w.movedPiece[ply - 1]][to_sq(w.currentMove[ply - 1])] = bestMove;
             update_hist(w.hist[us][from_sq(bestMove)][to_sq(bestMove)], bonus);
             for (int i = 0; i < nq; i++) update_hist(w.hist[us][from_sq(quiets[i])][to_sq(quiets[i])], -bonus);
+            if (UsePawnHist) {
+                auto& ph = w.phist[phist_idx(pos)];
+                update_hist(ph[pos.board[from_sq(bestMove)]][to_sq(bestMove)], bonus);
+                for (int i = 0; i < nq; i++) update_hist(ph[pos.board[from_sq(quiets[i])]][to_sq(quiets[i])], -bonus);
+            }
             if (UseContHist)
                 for (int bi = 0; bi < 2 + UseCont4; bi++) {
                     static const int backs[3] = {1, 2, 4};
@@ -823,6 +844,14 @@ static int negamax(Worker& w, int alpha, int beta, int depth, int ply, bool cutN
         }
         if (UseCaptHist)
             for (int i = 0; i < nc; i++) update_hist(w.capt[pos.board[from_sq(caps[i])]][to_sq(caps[i])][victim_of(pos, caps[i])], -bonus);
+    } else if (UsePriorBonus && !excl && bestValue <= alphaOrig && ply >= 1 && w.currentMove[ply - 1] &&
+               is_quiet(w.currentMove[ply - 1]) && w.movedPiece[ply - 1] < 12) {
+        // every reply failed low: the opponent's last quiet move was good, reward it from their side
+        int bonus = std::min(16 * depth * depth + 32 * depth, 1200);
+        Move pm = w.currentMove[ply - 1];
+        update_hist(w.hist[us ^ 1][from_sq(pm)][to_sq(pm)], bonus);
+        if (UseContHist && cont_idx_ok(w, ply - 1, 1))
+            update_hist(w.cont[w.movedPiece[ply - 2]][to_sq(w.currentMove[ply - 2])][w.movedPiece[ply - 1]][to_sq(pm)], bonus);
     }
 
     int bound = bestValue >= beta ? BOUND_LOWER : (PV && bestMove ? BOUND_EXACT : BOUND_UPPER);
@@ -878,18 +907,18 @@ static void id_loop(Worker& w) {
         for (w.pvIdx = 0; w.pvIdx < w.multiPV && !stopFlag; w.pvIdx++) {
             w.selDepth = 0;
             int prev = w.rootMoves[w.pvIdx].prevScore;
-            int delta = AspDelta, alpha = -VALUE_INF, beta = VALUE_INF;
+            int delta = AspDelta, alpha = -VALUE_INF, beta = VALUE_INF, fh = 0;
             if (depth >= 4 && prev != -VALUE_INF && std::abs(prev) < MATE_BOUND) {
                 alpha = std::max(prev - delta, -VALUE_INF);
                 beta = std::min(prev + delta, VALUE_INF);
             }
             while (true) {
-                int score = negamax<true>(w, alpha, beta, depth, 0, false);
+                int score = negamax<true>(w, alpha, beta, std::max(1, depth - fh), 0, false);
                 std::stable_sort(w.rootMoves.begin() + w.pvIdx, w.rootMoves.end(),
                                  [](const RootMove& a, const RootMove& b) { return a.score > b.score; });
                 if (stopFlag) break;
-                if (score <= alpha) { beta = (alpha + beta) / 2; alpha = std::max(score - delta, -VALUE_INF); }
-                else if (score >= beta) beta = std::min(score + delta, VALUE_INF);
+                if (score <= alpha) { beta = (alpha + beta) / 2; alpha = std::max(score - delta, -VALUE_INF); fh = 0; }
+                else if (score >= beta) { beta = std::min(score + delta, VALUE_INF); if (UseAspFH && std::abs(score) < MATE_BOUND) fh++; }
                 else break;
                 delta += delta / 2;
                 if (delta > 800) { alpha = -VALUE_INF; beta = VALUE_INF; }
@@ -921,6 +950,7 @@ static void clear_worker(Worker& w) {
     std::memset(w.corr, 0, sizeof(w.corr));
     std::memset(w.corrP, 0, sizeof(w.corrP));
     std::memset(w.corrN, 0, sizeof(w.corrN));
+    std::memset(w.phist, 0, sizeof(w.phist));
     std::memset(w.cont, 0, sizeof(w.cont));
     std::memset(w.capt, 0, sizeof(w.capt));
     std::memset(w.excluded, 0, sizeof(w.excluded));
