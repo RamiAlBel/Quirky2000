@@ -34,6 +34,8 @@ void ponderhit();
 void wait();
 // Synchronous fixed-depth search used by `bench`; returns nodes searched.
 uint64_t bench_one(const Position& root, int depth, bool quiet);
+// Synchronous silent search limited to `nodes` (datagen): best move and its score (side to move's view).
+void search_nodes(const Position& root, const std::vector<uint64_t>& history, uint64_t nodes, Move& best, int& score);
 }
 
 void out_line(const char* fmt, ...);

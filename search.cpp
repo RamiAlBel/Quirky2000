@@ -1075,6 +1075,18 @@ void start(const Position& root, const std::vector<uint64_t>& history, const Lim
     });
 }
 
+void search_nodes(const Position& root, const std::vector<uint64_t>& history, uint64_t nodes, Move& best, int& score) {
+    quietOutput = true;
+    Limits lim;
+    lim.nodes = nodes;
+    start(root, history, lim);
+    wait();
+    quietOutput = false;
+    const RootMove& rm = workers[0]->rootMoves.empty() ? RootMove() : workers[0]->rootMoves[0];
+    best = rm.move;
+    score = rm.score != -VALUE_INF ? rm.score : rm.prevScore;
+}
+
 uint64_t bench_one(const Position& root, int depth, bool quiet) {
     quietOutput = quiet;
     Limits lim;

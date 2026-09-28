@@ -106,6 +106,82 @@ static void bench(int depth) {
     fflush(stdout);
 }
 
+// ---- self-play data generation (REC4 records, same format as training/extract_v4.py) ----
+// datagen OUT GAMES NODES SEED: games from the start position + 8 random plies, NODES per move with the current
+// options; keeps positions with ply >= 16, side to move not in check, best move quiet, |score| < 2000.
+// Game end: mate/stalemate/draw rules, adjudication at |score| >= 2500 for 4 plies (win) or ply 400 (draw).
+#pragma pack(push, 1)
+struct Rec4 { uint16_t pc[32]; int16_t cp; uint8_t stm, ply; int8_t result; uint8_t pad; };
+#pragma pack(pop)
+static_assert(sizeof(Rec4) == 70, "REC4");
+static void datagen(const std::string& out, int games, uint64_t nodes, uint64_t seed) {
+    FILE* f = fopen(out.c_str(), "ab");
+    if (!f) { printf("cannot open %s\n", out.c_str()); return; }
+    uint64_t rng = seed * 0x9E3779B97F4A7C15ULL + 1;
+    auto rnd = [&]() { rng ^= rng << 13; rng ^= rng >> 7; rng ^= rng << 17; return rng; };
+    long kept = 0;
+    auto t0 = std::chrono::steady_clock::now();
+    for (int g = 0; g < games; g++) {
+        Position p;
+        p.set_fen(START_FEN);
+        std::vector<uint64_t> hist{p.key};
+        bool ok = true;
+        for (int i = 0; i < 8 && ok; i++) {
+            MoveList l;
+            generate_legal(p, l);
+            if (!l.size) ok = false;
+            else { p.do_move(l.moves[rnd() % l.size]); hist.push_back(p.key); }
+        }
+        MoveList l0;
+        generate_legal(p, l0);
+        if (!ok || !l0.size) continue;
+        search::clear_hash();
+        struct Pend { Rec4 r; int stmWhite; };
+        std::vector<Pend> pend;
+        int resultWhite = 0, streakW = 0, streakB = 0;
+        for (int ply = 8;; ply++) {
+            MoveList l;
+            generate_legal(p, l);
+            if (!l.size) { resultWhite = p.checkers ? (p.stm == WHITE ? -1 : 1) : 0; break; }
+            if (p.halfmove >= 100 || ply >= 400) break;
+            int rep = 0;
+            for (size_t i = 0; i + 1 < hist.size(); i++) rep += hist[i] == p.key;
+            if (rep >= 2) break;
+            Move best; int score;
+            search::search_nodes(p, hist, nodes, best, score);
+            if (!best) break;
+            int sw = p.stm == WHITE ? score : -score;
+            streakW = sw >= 2500 ? streakW + 1 : 0;
+            streakB = sw <= -2500 ? streakB + 1 : 0;
+            if (streakW >= 4) { resultWhite = 1; break; }
+            if (streakB >= 4) { resultWhite = -1; break; }
+            if (ply >= 16 && !p.checkers && !is_capture(best) && !is_promo(best) && std::abs(score) < 2000) {
+                Pend e{};
+                int n = 0;
+                for (int sq = 0; sq < 64; sq++)
+                    if (p.board[sq] != NO_PIECE && n < 32) e.r.pc[n++] = (uint16_t)(p.board[sq] * 64 + sq);
+                for (; n < 32; n++) e.r.pc[n] = 0xFFFF;
+                e.r.cp = (int16_t)std::max(-1500, std::min(1500, score));
+                e.r.stm = p.stm == WHITE;
+                e.r.ply = (uint8_t)std::min(ply, 255);
+                e.stmWhite = p.stm == WHITE;
+                pend.push_back(e);
+            }
+            p.do_move(best);
+            hist.push_back(p.key);
+        }
+        for (auto& e : pend) { e.r.result = (int8_t)(e.stmWhite ? resultWhite : -resultWhite); fwrite(&e.r, sizeof(Rec4), 1, f); }
+        kept += (long)pend.size();
+        if ((g + 1) % 20 == 0) {
+            fflush(f);
+            double s = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+            printf("datagen: %d games, %ld positions, %.1f games/min\n", g + 1, kept, (g + 1) / s * 60);
+            fflush(stdout);
+        }
+    }
+    fclose(f);
+}
+
 int main(int argc, char** argv) {
     bb::init();
     // default net next to the exe; the EvalFile option can load another one
@@ -279,6 +355,11 @@ int main(int argc, char** argv) {
             double ns = std::chrono::duration<double, std::nano>(std::chrono::steady_clock::now() - t0).count() / N;
             printf("quantized evaluate(): %.1f ns/call\n", ns);
             fflush(stdout);
+        } else if (tok == "datagen") {
+            std::string out = "datagen.bin";
+            int games = 100; uint64_t nodes = 5000, seed = 1;
+            is >> out >> games >> nodes >> seed;
+            datagen(out, games, nodes, seed);
         } else if (tok == "bench") {
             int depth = 13;
             is >> depth;
