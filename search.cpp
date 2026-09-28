@@ -88,6 +88,12 @@ TUNE(CapFutMul, 150, 50, 400);
 TUNE(UseDeeper, 0, 0, 1);    // LMR re-search one ply deeper / shallower depending on how much it surprised
 TUNE(DeeperMargin, 40, 10, 150);
 // ---- uncertainty-driven search (sigma head, SigmaFile) ----
+// ---- flag mode: opponent low on time and well behind us on the clock ----
+TUNE(UseFlag, 0, 0, 1);       // move faster (keep the clock lead) and avoid draws while the opponent may flag
+TUNE(FlagOppMs, 20000, 1000, 120000);
+TUNE(FlagRatio, 200, 100, 800);   // our time >= FlagRatio% of theirs
+TUNE(FlagTimePct, 60, 20, 100);   // soft/hard limits scaled by this
+TUNE(FlagContempt, 30, 0, 200);   // draw = -FlagContempt cp for us
 TUNE(UseSigma, 0, 0, 1);     // RFP and futility margins scaled by the node's predicted eval error
 TUNE(SigRef, 100, 20, 400);  // sigma (cp) at which margins are unchanged
 TUNE(SigMix, 50, 0, 100);    // % of the margin that scales with sigma/SigRef
@@ -239,6 +245,8 @@ static std::thread mainThread;
 static int optThreads = 1, optMultiPV = 1;
 static std::atomic<bool> pondering{false};
 static int64_t softMs = 0;
+static int drawScore = 0;  // contempt, from the root side's view (flag mode)
+static inline int draw_value(int ply) { return (ply & 1) ? drawScore : -drawScore; }
 static int LMR[64][64];
 
 static int64_t elapsed_ms() {
@@ -549,7 +557,7 @@ static int qsearch(Worker& w, int alpha, int beta, int ply) {
     if (PV) { w.pvLen[ply] = 0; if (ply + 1 > w.selDepth) w.selDepth = ply + 1; }
     if (w.id == 0 && (++w.tick & 2047) == 0) check_time();
     if (stopFlag.load(std::memory_order_relaxed)) return 0;
-    if (is_draw(w, ply)) return 0;
+    if (is_draw(w, ply)) return draw_value(ply);
     bool inCheck = pos.checkers != 0;
     if (ply >= MAX_PLY - 1) return inCheck ? 0 : evaluate(w, ply);
 
@@ -623,7 +631,7 @@ static int negamax(Worker& w, int alpha, int beta, int depth, int ply, bool cutN
 
     if (!root) {
         if (stopFlag.load(std::memory_order_relaxed)) return 0;
-        if (is_draw(w, ply)) return 0;
+        if (is_draw(w, ply)) return draw_value(ply);
         if (ply >= MAX_PLY - 1) return pos.checkers ? 0 : evaluate(w, ply);
         alpha = std::max(-VALUE_MATE + ply, alpha);
         beta = std::min(VALUE_MATE - ply - 1, beta);
@@ -1058,6 +1066,11 @@ void start(const Position& root, const std::vector<uint64_t>& history, const Lim
         int64_t hard = std::max<int64_t>(10, std::min<int64_t>(soft * TmHardMul, lim.time - 50));
         softMs = std::max<int64_t>(5, std::min(soft, hard));
         limits.movetime = hard;
+    }
+    drawScore = 0;
+    if (UseFlag && lim.fromClock && lim.oppTime >= 0 && lim.oppTime < FlagOppMs && lim.time * 100 >= lim.oppTime * FlagRatio) {
+        drawScore = FlagContempt;
+        if (softMs) { softMs = std::max<int64_t>(5, softMs * FlagTimePct / 100); limits.movetime = std::max<int64_t>(10, limits.movetime * FlagTimePct / 100); }
     }
     ttGen = (ttGen + 1) & 63;
 

@@ -15,6 +15,7 @@ struct Limits {
     bool ponder = false;     // "go ponder": search without time checks until ponderhit/stop
     bool fromClock = false;  // movetime was derived from wtime/btime (time management may override it)
     int64_t time = -1, inc = 0;
+    int64_t oppTime = -1;    // opponent's clock (flag mode)
 };
 
 namespace search {
