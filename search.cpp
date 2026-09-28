@@ -61,6 +61,24 @@ TUNE(LmrBase, 75, 0, 150);
 TUNE(LmrDiv, 225, 150, 400);
 TUNE(AspDelta, 18, 5, 60);
 TUNE(QsFut, 200, 50, 400);
+// ---- round E (on top of bundle D) ----
+TUNE(UseCorr2, 0, 0, 1);    // correction history v2: weighted average (not a sum), pawn + per-colour non-pawn keys
+TUNE(Corr2W, 256, 64, 1024); // update denominator: weight min(depth+1,16)/Corr2W
+TUNE(Corr2P, 100, 0, 200);   // % weight of the pawn table
+TUNE(Corr2N, 50, 0, 200);    // % weight of each non-pawn table
+TUNE(UseTtPv, 0, 0, 1);      // remember "was on the PV" in the TT; reduce such nodes less
+TUNE(UseHistPrune, 0, 0, 1); // prune quiets with very bad history at low depth
+TUNE(HpDepth, 4, 1, 8);
+TUNE(HpMul, 2000, 500, 8000);
+TUNE(UseCont4, 0, 0, 1);     // continuation history also for the move 4 plies back
+TUNE(UseDblExt, 0, 0, 1);    // double singular extension (non-PV, bounded per line)
+TUNE(DblMargin, 20, 0, 100);
+TUNE(DblLimit, 6, 1, 16);
+TUNE(UseNodeTM, 0, 0, 1);    // soft limit scaled by the share of root nodes spent on the best move
+TUNE(NtmBase, 150, 100, 250);
+TUNE(NtmMul, 135, 50, 250);
+TUNE(UseRfpBlend, 0, 0, 1);  // reverse futility returns (eval+beta)/2 instead of eval
+TUNE(UseLmrTtCap, 0, 0, 1);  // quiets reduced one more ply when the TT move is a capture
 
 static std::mutex outMutex;
 static bool quietOutput = false;
@@ -81,18 +99,19 @@ void out_line(const char* fmt, ...) {
 enum : int { BOUND_NONE = 0, BOUND_UPPER = 1, BOUND_LOWER = 2, BOUND_EXACT = 3 };
 struct TTEntry { std::atomic<uint64_t> key; std::atomic<uint64_t> data; };
 struct alignas(64) Cluster { TTEntry e[4]; };
-struct TTData { Move move; int score, eval, depth, bound; };
+struct TTData { Move move; int score, eval, depth, bound; bool pv; };
 
 static Cluster* ttTable = nullptr;
 static uint64_t ttClusters = 0;
 static int ttGen = 0;
 
-static inline uint64_t tt_pack(Move m, int score, int eval, int depth, int bound) {
+static inline uint64_t tt_pack(Move m, int score, int eval, int depth, int bound, bool pv) {
     return (uint64_t)m | ((uint64_t)(uint16_t)(int16_t)score << 16) | ((uint64_t)(uint16_t)(int16_t)eval << 32) |
-           ((uint64_t)(uint8_t)depth << 48) | ((uint64_t)(bound | (ttGen << 2)) << 56);
+           ((uint64_t)((depth & 0x7F) | (pv << 7)) << 48) | ((uint64_t)(bound | (ttGen << 2)) << 56);
 }
 static inline int tt_bound(uint64_t d) { return (int)((d >> 56) & 3); }
-static inline int tt_depth(uint64_t d) { return (int)((d >> 48) & 0xFF); }
+static inline int tt_depth(uint64_t d) { return (int)((d >> 48) & 0x7F); }
+static inline bool tt_pv(uint64_t d) { return (d >> 55) & 1; }
 static inline int tt_gen(uint64_t d) { return (int)(d >> 58); }
 #ifdef _MSC_VER
 static inline Cluster& tt_cluster(uint64_t key) { return ttTable[__umulh(key, ttClusters)]; }
@@ -111,13 +130,14 @@ static bool tt_probe(uint64_t key, TTData& out) {
             out.eval = (int16_t)(d >> 32);
             out.depth = tt_depth(d);
             out.bound = tt_bound(d);
+            out.pv = tt_pv(d);
             return true;
         }
     }
     return false;
 }
 
-static void tt_store(uint64_t key, Move move, int score, int eval, int depth, int bound) {
+static void tt_store(uint64_t key, Move move, int score, int eval, int depth, int bound, bool pv = false) {
     Cluster& c = tt_cluster(key);
     TTEntry* rep = nullptr;
     uint64_t old = 0;
@@ -134,7 +154,7 @@ static void tt_store(uint64_t key, Move move, int score, int eval, int depth, in
         if (!move) move = (Move)(old & 0xFFFF);
         if (bound != BOUND_EXACT && depth + 4 < tt_depth(old) && tt_gen(old) == ttGen) return;
     }
-    uint64_t d = tt_pack(move, score, eval, depth, bound);
+    uint64_t d = tt_pack(move, score, eval, depth, bound, pv);
     rep->data.store(d, std::memory_order_relaxed);
     rep->key.store(key ^ d, std::memory_order_relaxed);
 }
@@ -160,6 +180,7 @@ struct RootMove {
     Move move = 0;
     int score = -VALUE_INF, prevScore = -VALUE_INF, selDepth = 0;
     std::vector<Move> pv;
+    uint64_t nodes = 0;  // main worker: nodes spent below this root move
 };
 
 struct Worker {
@@ -176,6 +197,8 @@ struct Worker {
     int hist[2][64][64];
     Move counter[12][64];
     int16_t corr[2][16384];
+    int16_t corrP[2][16384], corrN[2][2][16384];  // v2: [stm][pawn key], [stm][colour][non-pawn key]
+    int dext[MAX_PLY + 4];  // double extensions on the current line
     int16_t cont[12][64][12][64];  // [prev piece][prev to][piece][to]
     int capt[12][64][6];           // [piece][to][victim type; 5 = none (promotion)]
     Move excluded[MAX_PLY + 4];
@@ -328,8 +351,25 @@ static inline uint32_t pawn_idx(const Position& p) {
     uint64_t k = p.pcs(WHITE, PAWN) * 0x9E3779B97F4A7C15ULL ^ (p.pcs(BLACK, PAWN) + 0x632BE59BD9B4E019ULL) * 0xC2B2AE3D27D4EB4FULL;
     return (uint32_t)(k >> 50);  // 14 bits
 }
+static inline uint32_t np_idx(const Position& p, int c) {
+    uint64_t k = 0x9E3779B97F4A7C15ULL;
+    for (int t = KNIGHT; t <= KING; t++) k = (k ^ p.pcs(c, t)) * 0xC2B2AE3D27D4EB4FULL + t;
+    return (uint32_t)(k >> 50);
+}
+static inline int corr2_total(const Worker& w, const Position& p) {
+    int s = w.corrP[p.stm][pawn_idx(p)] * Corr2P + (w.corrN[p.stm][WHITE][np_idx(p, WHITE)] + w.corrN[p.stm][BLACK][np_idx(p, BLACK)]) * Corr2N;
+    return s / (16 * 100);
+}
+static inline void corr2_update(Worker& w, const Position& p, int diff, int depth) {
+    int wt = std::min(depth + 1, 16), t = std::clamp(diff * 16, -8192, 8192);
+    auto upd = [&](int16_t& c) { c = (int16_t)std::clamp((c * (Corr2W - wt) + t * wt) / Corr2W, -4096, 4096); };
+    upd(w.corrP[p.stm][pawn_idx(p)]);
+    upd(w.corrN[p.stm][WHITE][np_idx(p, WHITE)]);
+    upd(w.corrN[p.stm][BLACK][np_idx(p, BLACK)]);
+}
 // corr holds the average (search result - static eval) of this pawn structure in 1/16 cp
 static inline int corrected(const Worker& w, const Position& p, int raw) {
+    if (UseCorr2) return std::clamp(raw + corr2_total(w, p), -MATE_BOUND + 1, MATE_BOUND - 1);
     if (!UseCorrHist) return raw;
     return std::clamp(raw + w.corr[p.stm][pawn_idx(p)] / 16, -MATE_BOUND + 1, MATE_BOUND - 1);
 }
@@ -340,9 +380,12 @@ static inline int quiet_score(const Worker& w, const Position& pos, int ply, Mov
     int s = w.hist[pos.stm][from_sq(m)][to_sq(m)];
     if (UseContHist) {
         int pc = pos.board[from_sq(m)], to = to_sq(m);
-        for (int back = 1; back <= 2; back++)
+        static const int backs[3] = {1, 2, 4};
+        for (int i = 0; i < 2 + UseCont4; i++) {
+            int back = backs[i];
             if (cont_idx_ok(w, ply, back))
                 s += w.cont[w.movedPiece[ply - back]][to_sq(w.currentMove[ply - back])][pc][to];
+        }
     }
     return s;
 }
@@ -455,6 +498,7 @@ static inline void make_child(Worker& w, int ply, Move m) {
     w.movedPiece[ply] = w.pos[ply].board[from_sq(m)];
     w.keys[w.gameLen + ply] = child.key;
     w.pfn[ply + 1] = w.pfn[ply] + 1;
+    w.dext[ply + 1] = w.dext[ply];
     w.nodes.fetch_add(1, std::memory_order_relaxed);
 }
 
@@ -553,6 +597,7 @@ static int negamax(Worker& w, int alpha, int beta, int depth, int ply, bool cutN
     int ttValue = ttHit ? value_from_tt(tt.score, ply) : VALUE_NONE;
     Move ttMove = root ? w.rootMoves[w.pvIdx].move : (ttHit ? tt.move : 0);
     const Move excl = w.excluded[ply];
+    const bool ttPv = UseTtPv && (PV || (ttHit && tt.pv));
 
     if (!PV && !excl && ttHit && tt.depth >= depth && ttValue != VALUE_NONE &&
         (tt.bound & (ttValue >= beta ? BOUND_LOWER : BOUND_UPPER)))
@@ -597,7 +642,7 @@ static int negamax(Worker& w, int alpha, int beta, int depth, int ply, bool cutN
         }
         // reverse futility: static eval is so far above beta that a shallow search won't bring it back
         if (depth < RfpDepth && eval - (RfpMargin - RfpImp * improving) * depth >= beta && eval < MATE_BOUND && beta > -MATE_BOUND)
-            return eval;
+            return UseRfpBlend ? (eval + beta) / 2 : eval;
         // null move: if passing still beats beta, a real move almost surely does too
         if (depth >= 3 && eval >= beta && w.staticEval[ply] >= beta - 20 * depth + 180 &&
             w.currentMove[ply - 1] != 0 && pos.has_non_pawn(us) && beta > -MATE_BOUND) {
@@ -612,6 +657,7 @@ static int negamax(Worker& w, int alpha, int beta, int depth, int ply, bool cutN
             w.movedPiece[ply] = NO_PIECE;
             w.keys[w.gameLen + ply] = child.key;
             w.pfn[ply + 1] = 0;
+            w.dext[ply + 1] = w.dext[ply];
             w.nodes.fetch_add(1, std::memory_order_relaxed);
             int v = -negamax<false>(w, -beta, -beta + 1, depth - R, ply + 1, !cutNode);
             if (stopFlag.load(std::memory_order_relaxed)) return 0;
@@ -670,6 +716,7 @@ static int negamax(Worker& w, int alpha, int beta, int depth, int ply, bool cutN
             if (quiet) {
                 if (depth <= 8 && moveCount >= (LmpBase + depth * depth) / (2 - improving)) { skipQuiets = true; continue; }
                 if (!inCheck && lmrDepth < 7 && w.staticEval[ply] + FutBase + FutMul * lmrDepth <= alpha) continue;
+                if (UseHistPrune && lmrDepth < HpDepth && h < -HpMul * depth) continue;
                 if (lmrDepth < 8 && !see_ge(pos, m, -SeeQuiet * lmrDepth * lmrDepth)) continue;
             } else if (depth < 7 && !see_ge(pos, m, -SeeNoisy * depth)) {
                 continue;
@@ -685,13 +732,15 @@ static int negamax(Worker& w, int alpha, int beta, int depth, int ply, bool cutN
             int sv = negamax<false>(w, sBeta - 1, sBeta, (depth - 1) / 2, ply, cutNode);
             w.excluded[ply] = 0;
             if (stopFlag.load(std::memory_order_relaxed)) return 0;
-            if (sv < sBeta) ext = 1;
+            if (sv < sBeta) ext = UseDblExt && !PV && sv < sBeta - DblMargin && w.dext[ply] < DblLimit ? 2 : 1;
             else if (sBeta >= beta) return sBeta;  // multicut: several moves beat beta
             else if (ttValue >= beta) ext = -1;
         }
         newDepth += ext;
 
+        const uint64_t nodesBefore = root ? w.nodes.load(std::memory_order_relaxed) : 0;
         make_child(w, ply, m);
+        if (ext >= 2) w.dext[ply + 1]++;
         const bool givesCheck = w.pos[ply + 1].checkers != 0;
         if (givesCheck && ply < 2 * w.rootDepth && ext <= 0) newDepth++;
 
@@ -704,6 +753,8 @@ static int negamax(Worker& w, int alpha, int beta, int depth, int ply, bool cutN
             if (m == w.killers[ply][0] || m == w.killers[ply][1]) r--;
             if (givesCheck) r--;
             if (!quiet) r--;
+            if (ttPv && !PV) r--;
+            if (UseLmrTtCap && quiet && ttMove && !is_quiet(ttMove)) r++;
             r -= h / HistDiv;
             int d = std::clamp(newDepth - r, 1, newDepth);
             v = -negamax<false>(w, -(alpha + 1), -alpha, d, ply + 1, true);
@@ -720,6 +771,7 @@ static int negamax(Worker& w, int alpha, int beta, int depth, int ply, bool cutN
         if (root) {
             for (auto& rm : w.rootMoves) {
                 if (rm.move != m) continue;
+                rm.nodes += w.nodes.load(std::memory_order_relaxed) - nodesBefore;
                 if (moveCount == 1 || v > alpha) {
                     rm.score = v;
                     rm.selDepth = w.selDepth;
@@ -758,7 +810,9 @@ static int negamax(Worker& w, int alpha, int beta, int depth, int ply, bool cutN
             update_hist(w.hist[us][from_sq(bestMove)][to_sq(bestMove)], bonus);
             for (int i = 0; i < nq; i++) update_hist(w.hist[us][from_sq(quiets[i])][to_sq(quiets[i])], -bonus);
             if (UseContHist)
-                for (int back = 1; back <= 2; back++) {
+                for (int bi = 0; bi < 2 + UseCont4; bi++) {
+                    static const int backs[3] = {1, 2, 4};
+                    int back = backs[bi];
                     if (!cont_idx_ok(w, ply, back)) continue;
                     auto& tab = w.cont[w.movedPiece[ply - back]][to_sq(w.currentMove[ply - back])];
                     update_hist(tab[pos.board[from_sq(bestMove)]][to_sq(bestMove)], bonus);
@@ -779,8 +833,11 @@ static int negamax(Worker& w, int alpha, int beta, int depth, int ply, bool cutN
         int nv = c + (bestValue - w.staticEval[ply]) * 16 * std::min(depth + 1, 16) / CorrDiv;
         c = (int16_t)std::clamp(nv, -2048, 2048);
     }
+    if (UseCorr2 && !inCheck && !excl && (!bestMove || is_quiet(bestMove)) && std::abs(bestValue) < TB_WIN_V - MAX_PLY &&
+        !(bound == BOUND_LOWER && bestValue <= w.staticEval[ply]) && !(bound == BOUND_UPPER && bestValue >= w.staticEval[ply]))
+        corr2_update(w, pos, bestValue - w.staticEval[ply], depth);
     if (!(root && w.pvIdx) && !excl)
-        tt_store(pos.key, bestMove, value_to_tt(bestValue, ply), rawEval, depth, bound);
+        tt_store(pos.key, bestMove, value_to_tt(bestValue, ply), rawEval, depth, bound, ttPv);
     return bestValue;
 }
 
@@ -849,6 +906,10 @@ static void id_loop(Worker& w) {
             stable = bm == lastBest ? stable + 1 : 0;
             lastBest = bm;
             double f = 1.3 - 0.05 * std::min(stable, 8);
+            if (UseNodeTM && depth >= 6) {
+                double frac = (double)w.rootMoves[0].nodes / std::max<uint64_t>(1, w.nodes.load(std::memory_order_relaxed));
+                f *= (NtmBase / 100.0 - frac) * NtmMul / 100.0;
+            }
             if (elapsed_ms() > softMs * f) stopFlag = true;
         }
     }
@@ -858,6 +919,8 @@ static void clear_worker(Worker& w) {
     std::memset(w.hist, 0, sizeof(w.hist));
     std::memset(w.counter, 0, sizeof(w.counter));
     std::memset(w.corr, 0, sizeof(w.corr));
+    std::memset(w.corrP, 0, sizeof(w.corrP));
+    std::memset(w.corrN, 0, sizeof(w.corrN));
     std::memset(w.cont, 0, sizeof(w.cont));
     std::memset(w.capt, 0, sizeof(w.capt));
     std::memset(w.excluded, 0, sizeof(w.excluded));
@@ -950,6 +1013,7 @@ void start(const Position& root, const std::vector<uint64_t>& history, const Lim
         w->nodes = 0;
         w->completedDepth = 0;
         w->currentMove[0] = 0;
+        w->dext[0] = 0;
         std::memset(w->killers, 0, sizeof(w->killers));
         for (auto& row : w->hist) for (auto& col : row) for (int& v : col) v /= 2;
         w->rootMoves.clear();
