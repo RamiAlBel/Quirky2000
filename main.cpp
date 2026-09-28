@@ -227,6 +227,7 @@ int main(int argc, char** argv) {
             out_line("option name BookFile type string default <empty>");
             out_line("option name SmallNetFile type string default <empty>");
             out_line("option name EvalFile type string default lite.nnue");
+            out_line("option name SigmaFile type string default <empty>");
             for (auto& t : tunables())
                 out_line("option name %s type spin default %d min %d max %d", t.name, t.def, t.lo, t.hi);
             out_line("uciok");
@@ -244,6 +245,9 @@ int main(int argc, char** argv) {
                 std::string path = value.find_first_of("/\\") == std::string::npos ? exe_dir() + "/" + value : value;
                 netLoaded = nnue::load(path);
                 out_line(netLoaded ? "info string loaded network %s" : "info string ERROR could not load network %s", path.c_str());
+            } else if (name == "SigmaFile") {
+                search::stop(); search::wait();
+                out_line(nnue::load_sigma(value) ? "info string sigma head %s loaded" : "info string ERROR could not load sigma head %s", value.c_str());
             } else if (name == "SmallNetFile") {
                 out_line(search::set_small_net(value) ? "info string small net %s loaded" : "info string ERROR could not load small net %s", value.c_str());
             } else if (name == "BookFile") {
@@ -354,6 +358,13 @@ int main(int argc, char** argv) {
             for (int i = 0; i < N; i++) sink += nnue::evaluate(acc, i & 1, 32);
             double ns = std::chrono::duration<double, std::nano>(std::chrono::steady_clock::now() - t0).count() / N;
             printf("quantized evaluate(): %.1f ns/call\n", ns);
+            fflush(stdout);
+        } else if (tok == "sig") {  // static eval and uncertainty of the current position (cross-check vs sigma.py)
+            Accumulator a;
+            nnue::refresh_all(pos, a);
+            int sg = -1, v = nnue::sigma_loaded() ? nnue::evaluate_sigma(a, pos.stm, popcount(pos.occupied), sg)
+                                                   : nnue::evaluate(a, pos.stm, popcount(pos.occupied));
+            printf("eval %d sigma %d\n", v, sg);
             fflush(stdout);
         } else if (tok == "datagen") {
             std::string out = "datagen.bin";

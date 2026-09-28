@@ -181,8 +181,8 @@ static inline void l1_rows(const uint8_t* x, int b, int o0, float* l1out) {
     for (int o = 0; o < N; o++) l1out[o0 + o] = hsum_epi32(sum[o]) * L1Deq[b][o0 + o] + L1B[b][o0 + o];
 }
 
-double evaluate_quant_raw(const Accumulator& acc, int stm, int pieces) {
-    alignas(32) uint8_t x[MAX_L1IN];
+// L1 input: requantized FT activations of both perspectives (stm first), L1In uint8 values
+static void build_x(const Accumulator& acc, int stm, uint8_t* x) {
     const __m256i zero = _mm256_setzero_si256(), cap = _mm256_set1_epi8(127);
     const int half_n = L1In / 2;
     for (int half = 0; half < 2; half++) {
@@ -207,6 +207,11 @@ double evaluate_quant_raw(const Accumulator& acc, int stm, int pieces) {
             }
         }
     }
+}
+
+double evaluate_quant_raw(const Accumulator& acc, int stm, int pieces) {
+    alignas(32) uint8_t x[MAX_L1IN];
+    build_x(acc, stm, x);
     const int b = bucket(pieces);
     alignas(32) float l1out[MAX_H1] = {};
     int o0 = 0;
@@ -240,4 +245,82 @@ double evaluate_float_raw(const Accumulator& acc, int stm, int pieces) {
 
 int evaluate(const Accumulator& acc, int stm, int pieces) {
     return (int)std::lround(evaluate_quant_raw(acc, stm, pieces) * CpScale);
+}
+
+// ---- uncertainty head (SIG1, training/sigma.py): expected |static eval - deep eval| in cp ----
+//   L1 on the same uint8 input as the eval head (int8 rows, per-row scale), clamp, dual,
+//   out = w . [h, h^2, a, a^2] + b with a = min(|eval|/400, 4); sigma = 100 * softplus(out)
+constexpr int SIG_H1 = 8;
+static int SigNB = 0;
+alignas(64) static int8_t SL1W[MAX_NB][SIG_H1][MAX_L1IN];
+static float SL1Deq[MAX_NB][SIG_H1], SL1B[MAX_NB][SIG_H1], SOutW[MAX_NB][2 * SIG_H1 + 2], SOutB[MAX_NB];
+
+bool load_sigma(const std::string& path) {
+    SigNB = 0;
+    FILE* f = fopen(path.c_str(), "rb");
+    if (!f) return false;
+    char magic[4];
+    int nb = 0, h1 = 0, l1in = 0;
+    bool ok = fread(magic, 1, 4, f) == 4 && memcmp(magic, "SIG1", 4) == 0 && fread(&nb, 4, 1, f) == 1 &&
+              fread(&h1, 4, 1, f) == 1 && fread(&l1in, 4, 1, f) == 1 && nb >= 1 && nb <= MAX_NB && h1 == SIG_H1 &&
+              l1in == L1In;
+    std::vector<float> w1((size_t)nb * h1 * l1in), b1(nb * h1), wo(nb * (2 * h1 + 2)), bo(nb);
+    ok = ok && fread(w1.data(), 4, w1.size(), f) == w1.size() && fread(b1.data(), 4, b1.size(), f) == b1.size() &&
+         fread(wo.data(), 4, wo.size(), f) == wo.size() && fread(bo.data(), 4, bo.size(), f) == bo.size();
+    fclose(f);
+    if (!ok) { fprintf(stderr, "nnue: %s is not a SIG1 file for this net\n", path.c_str()); return false; }
+    // FtAct pair/screlu inputs carry the same activation correction as the eval head
+    double actCorr = FtAct == 0 ? 1.0 : (127.0 * (double)FtScale * FtScale * 1048576.0) / SqK;
+    for (int b = 0; b < nb; b++) {
+        for (int o = 0; o < h1; o++) {
+            const float* w = &w1[((size_t)b * h1 + o) * l1in];
+            float maxAbs = 1e-12f;
+            for (int i = 0; i < l1in; i++) maxAbs = std::fmax(maxAbs, std::fabs(w[i]));
+            float sc = 127.0f / maxAbs;
+            for (int i = 0; i < l1in; i++) SL1W[b][o][i] = (int8_t)std::lround(w[i] * sc);
+            SL1Deq[b][o] = (float)(actCorr / (127.0 * sc));
+            SL1B[b][o] = b1[b * h1 + o];
+        }
+        for (int i = 0; i < 2 * h1 + 2; i++) SOutW[b][i] = wo[b * (2 * h1 + 2) + i];
+        SOutB[b] = bo[b];
+    }
+    SigNB = nb;
+    return true;
+}
+bool sigma_loaded() { return SigNB > 0; }
+
+static int sigma_from_x(const uint8_t* x, int pieces, int evalCp) {
+    int b = (pieces - 1) * SigNB / 32;
+    b = b < 0 ? 0 : (b >= SigNB ? SigNB - 1 : b);
+    const __m256i ones = _mm256_set1_epi16(1);
+    __m256i sum[SIG_H1];
+    for (int o = 0; o < SIG_H1; o++) sum[o] = _mm256_setzero_si256();
+    for (int i = 0; i < L1In; i += 32) {
+        __m256i xv = _mm256_load_si256((const __m256i*)(x + i));
+        for (int o = 0; o < SIG_H1; o++) {
+            __m256i p = _mm256_maddubs_epi16(xv, _mm256_load_si256((const __m256i*)&SL1W[b][o][i]));
+            sum[o] = _mm256_add_epi32(sum[o], _mm256_madd_epi16(p, ones));
+        }
+    }
+    float a = std::fmin(std::fabs((float)evalCp) / 400.0f, 4.0f);
+    float z = SOutB[b] + SOutW[b][2 * SIG_H1] * a + SOutW[b][2 * SIG_H1 + 1] * a * a;
+    for (int o = 0; o < SIG_H1; o++) {
+        float h = std::fmin(std::fmax(hsum_epi32(sum[o]) * SL1Deq[b][o] + SL1B[b][o], 0.0f), 1.0f);
+        z += SOutW[b][o] * h + SOutW[b][SIG_H1 + o] * h * h;
+    }
+    float sp = z > 20.0f ? z : std::log1p(std::exp(z));
+    return (int)std::lround(100.0f * sp);
+}
+
+int evaluate_sigma(const Accumulator& acc, int stm, int pieces, int& sigma) {
+    alignas(32) uint8_t x[MAX_L1IN];
+    build_x(acc, stm, x);
+    const int b = bucket(pieces);
+    alignas(32) float l1out[MAX_H1] = {};
+    int o0 = 0;
+    for (; o0 + 8 <= H1; o0 += 8) l1_rows<8>(x, b, o0, l1out);
+    if (o0 < H1) l1_rows<4>(x, b, o0, l1out);
+    int v = (int)std::lround((tail(l1out, b) + psqt_term(acc, stm, b)) * CpScale);
+    sigma = sigma_from_x(x, pieces, v);
+    return v;
 }

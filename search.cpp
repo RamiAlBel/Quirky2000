@@ -87,6 +87,13 @@ TUNE(CapFutBase, 200, 50, 500);
 TUNE(CapFutMul, 150, 50, 400);
 TUNE(UseDeeper, 0, 0, 1);    // LMR re-search one ply deeper / shallower depending on how much it surprised
 TUNE(DeeperMargin, 40, 10, 150);
+// ---- uncertainty-driven search (sigma head, SigmaFile) ----
+TUNE(UseSigma, 0, 0, 1);     // RFP and futility margins scaled by the node's predicted eval error
+TUNE(SigRef, 100, 20, 400);  // sigma (cp) at which margins are unchanged
+TUNE(SigMix, 50, 0, 100);    // % of the margin that scales with sigma/SigRef
+TUNE(UseSigLmr, 0, 0, 1);    // reduce more in calm nodes (sigma < SigLo), less in sharp ones (sigma > SigHi)
+TUNE(SigLo, 40, 5, 200);
+TUNE(SigHi, 200, 50, 800);
 
 static std::mutex outMutex;
 static bool quietOutput = false;
@@ -207,6 +214,8 @@ struct Worker {
     int16_t corr[2][16384];
     int16_t corrP[2][16384], corrN[2][2][16384];  // v2: [stm][pawn key], [stm][colour][non-pawn key]
     int dext[MAX_PLY + 4];
+    int sigma[MAX_PLY + 4];
+    bool sigOk[MAX_PLY + 4];
     int16_t phist[1024][12][64];  // [pawn key][piece][to]  // double extensions on the current line
     int16_t cont[12][64][12][64];  // [prev piece][prev to][piece][to]
     int capt[12][64][6];           // [piece][to][victim type; 5 = none (promotion)]
@@ -337,18 +346,38 @@ static inline int material(const Position& p) {  // white minus black, simple pi
     return m;
 }
 
-static inline int evaluate(Worker& w, int ply) {
+static inline int evaluate(Worker& w, int ply, bool withSigma = false) {
     const Position& p = w.pos[ply];
     int v;
     if (UseSmallNet && smallLoaded && std::abs(material(p)) > SmallNetThreshold) {
         ensure_accS(w, ply);
         v = nnue_small::evaluate(w.accS[ply], p.stm, popcount(p.occupied));
+    } else if (withSigma) {
+        ensure_acc(w, ply);
+        v = nnue::evaluate_sigma(w.acc[ply], p.stm, popcount(p.occupied), w.sigma[ply]);
+        w.sigOk[ply] = true;
     } else {
         ensure_acc(w, ply);
         v = nnue::evaluate(w.acc[ply], p.stm, popcount(p.occupied));
     }
     v = v * (200 - p.halfmove) / 200;
     return std::clamp(v, -MATE_BOUND + 1, MATE_BOUND - 1);
+}
+
+// sigma of the node at ply (computed with its eval, or on demand when the eval came from the TT)
+static inline int node_sigma(Worker& w, int ply) {
+    if (!w.sigOk[ply]) {
+        ensure_acc(w, ply);
+        const Position& p = w.pos[ply];
+        nnue::evaluate_sigma(w.acc[ply], p.stm, popcount(p.occupied), w.sigma[ply]);
+        w.sigOk[ply] = true;
+    }
+    return w.sigma[ply];
+}
+// margin multiplier in percent: 100 at sigma == SigRef
+static inline int sig_pct(Worker& w, int ply) {
+    if (!UseSigma || !nnue::sigma_loaded()) return 100;
+    return std::clamp(100 - SigMix + SigMix * node_sigma(w, ply) / SigRef, 50, 200);
 }
 
 static inline bool is_quiet(Move m) { return !is_capture(m) && !is_promo(m); }
@@ -629,10 +658,11 @@ static int negamax(Worker& w, int alpha, int beta, int depth, int ply, bool cutN
     }
 
     int eval, rawEval;
+    w.sigOk[ply] = false;
     if (inCheck) {
         rawEval = eval = w.staticEval[ply] = VALUE_NONE;
     } else {
-        rawEval = (ttHit && tt.eval != VALUE_NONE) ? tt.eval : evaluate(w, ply);
+        rawEval = (ttHit && tt.eval != VALUE_NONE) ? tt.eval : evaluate(w, ply, (UseSigma || UseSigLmr) && nnue::sigma_loaded());
         eval = w.staticEval[ply] = corrected(w, pos, rawEval);
         if (ttHit && ttValue != VALUE_NONE && (tt.bound & (ttValue > eval ? BOUND_LOWER : BOUND_UPPER)))
             eval = ttValue;
@@ -652,7 +682,7 @@ static int negamax(Worker& w, int alpha, int beta, int depth, int ply, bool cutN
             if (v <= alpha) return v;
         }
         // reverse futility: static eval is so far above beta that a shallow search won't bring it back
-        if (depth < RfpDepth && eval - (RfpMargin - RfpImp * improving) * depth >= beta && eval < MATE_BOUND && beta > -MATE_BOUND)
+        if (depth < RfpDepth && eval - (RfpMargin - RfpImp * improving) * depth * sig_pct(w, ply) / 100 >= beta && eval < MATE_BOUND && beta > -MATE_BOUND)
             return UseRfpBlend ? (eval + beta) / 2 : eval;
         // null move: if passing still beats beta, a real move almost surely does too
         if (depth >= 3 && eval >= beta && w.staticEval[ply] >= beta - 20 * depth + 180 &&
@@ -726,7 +756,7 @@ static int negamax(Worker& w, int alpha, int beta, int depth, int ply, bool cutN
             int lmrDepth = std::max(newDepth - r0, 0);
             if (quiet) {
                 if (depth <= 8 && moveCount >= (LmpBase + depth * depth) / (2 - improving)) { skipQuiets = true; continue; }
-                if (!inCheck && lmrDepth < 7 && w.staticEval[ply] + FutBase + FutMul * lmrDepth <= alpha) continue;
+                if (!inCheck && lmrDepth < 7 && w.staticEval[ply] + (FutBase + FutMul * lmrDepth) * sig_pct(w, ply) / 100 <= alpha) continue;
                 if (UseHistPrune && lmrDepth < HpDepth && h < -HpMul * depth) continue;
                 if (lmrDepth < 8 && !see_ge(pos, m, -SeeQuiet * lmrDepth * lmrDepth)) continue;
             } else {
@@ -769,6 +799,10 @@ static int negamax(Worker& w, int alpha, int beta, int depth, int ply, bool cutN
             if (!quiet) r--;
             if (ttPv && !PV) r--;
             if (UseLmrTtCap && quiet && ttMove && !is_quiet(ttMove)) r++;
+            if (UseSigLmr && !inCheck && nnue::sigma_loaded()) {
+                int sg = node_sigma(w, ply);
+                r += (sg < SigLo) - (sg > SigHi);
+            }
             r -= h / HistDiv;
             int d = std::clamp(newDepth - r, 1, newDepth);
             v = -negamax<false>(w, -(alpha + 1), -alpha, d, ply + 1, true);

@@ -47,6 +47,11 @@ void update(const Position& parent, Move m, const Position& child, const Accumul
 int evaluate(const Accumulator& acc, int stm, int pieces);             // centipawns, quantized SIMD path
 double evaluate_float_raw(const Accumulator& acc, int stm, int pieces); // raw network output, float reference
 double evaluate_quant_raw(const Accumulator& acc, int stm, int pieces); // raw network output, quantized path
+#ifdef NNUE_LNN2
+bool load_sigma(const std::string& path);  // SIG1 uncertainty head for the loaded net (training/sigma.py)
+bool sigma_loaded();
+int evaluate_sigma(const Accumulator& acc, int stm, int pieces, int& sigma);  // eval cp + sigma cp in one pass
+#endif
 }
 #ifndef NNUE_SMALL_TU
 using nnue::Accumulator;
