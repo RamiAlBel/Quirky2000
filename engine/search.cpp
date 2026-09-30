@@ -2,7 +2,7 @@
 #include "nnue.h"
 #include "nnue_small.h"
 #include "tune.h"
-#include "../fathom/src/tbprobe.h"
+#include "tbprobe.h"
 #include <atomic>
 #include <thread>
 #include <mutex>
