@@ -1,0 +1,6 @@
+nobook UseBook=0
+cerebellum UseBook=1 BookFile=/scratch/ralbe/chess_nnue/books/cerebellum.bin BookBest=1 BookDepth=255
+m11_2 UseBook=1 BookFile=/scratch/ralbe/chess_nnue/books/m11_2.bin BookBest=1 BookDepth=255
+optimus32 UseBook=1 BookFile=/scratch/ralbe/chess_nnue/books/optimus32.bin BookBest=1 BookDepth=255
+own_jul2200 UseBook=1 BookFile=/scratch/ralbe/chess_nnue/books/own_jul2200.bin BookBest=1 BookDepth=255
+sf211 UseBook=1 BookFile=/scratch/ralbe/chess_nnue/books/sf211.bin BookBest=1 BookDepth=255

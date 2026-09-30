@@ -1,0 +1,12 @@
+own_deployed UseBook=1 BookFile=/scratch/ralbe/chess_nnue/books/own_jul2200.bin BookBest=0 BookDepth=20
+nobook UseBook=0
+aaricia2012 UseBook=1 BookFile=/scratch/ralbe/chess_nnue/books/aaricia2012.bin BookBest=1 BookDepth=255
+cerebellum UseBook=1 BookFile=/scratch/ralbe/chess_nnue/books/cerebellum.bin BookBest=1 BookDepth=255
+chiron15 UseBook=1 BookFile=/scratch/ralbe/chess_nnue/books/chiron15.bin BookBest=1 BookDepth=255
+m11_2 UseBook=1 BookFile=/scratch/ralbe/chess_nnue/books/m11_2.bin BookBest=1 BookDepth=255
+morphius129c UseBook=1 BookFile=/scratch/ralbe/chess_nnue/books/morphius129c.bin BookBest=1 BookDepth=255
+optimus32 UseBook=1 BookFile=/scratch/ralbe/chess_nnue/books/optimus32.bin BookBest=1 BookDepth=255
+own_jul2200 UseBook=1 BookFile=/scratch/ralbe/chess_nnue/books/own_jul2200.bin BookBest=1 BookDepth=255
+perfect2021 UseBook=1 BookFile=/scratch/ralbe/chess_nnue/books/perfect2021.bin BookBest=1 BookDepth=255
+ranomi170527 UseBook=1 BookFile=/scratch/ralbe/chess_nnue/books/ranomi170527.bin BookBest=1 BookDepth=255
+sf211 UseBook=1 BookFile=/scratch/ralbe/chess_nnue/books/sf211.bin BookBest=1 BookDepth=255
