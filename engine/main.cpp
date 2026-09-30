@@ -40,6 +40,50 @@ static std::string exe_dir() {
     return k == std::string::npos ? "." : p.substr(0, k);
 }
 
+// Expert nets (round G): ExpertRules = "COND=PATH;COND=PATH;..." checked in order at every `go`, first match wins,
+// otherwise the EvalFile net. COND: open:FAM (opening family of the game from its first two plies, known only for
+// `position startpos moves ...`; FAM as training/subsets.py: e4e5 sicil e4oth d4d5 d4nf6 d4oth flank) or
+// pcs:LO-HI (pieces on the board at the root, kings included). A switch reloads the net file (a few ms).
+struct ExpertRule { std::string fam; int lo = 0, hi = -1; std::string path; };
+static std::vector<ExpertRule> Experts;
+static std::string GameFam, EvalPath, LoadedPath;
+
+static std::string family_of(const std::string& w, const std::string& b) {
+    if (w == "e2e4") return b == "e7e5" ? "e4e5" : b == "c7c5" ? "sicil" : "e4oth";
+    if (w == "d2d4") return b == "d7d5" ? "d4d5" : b == "g8f6" ? "d4nf6" : "d4oth";
+    return w.empty() ? "" : "flank";
+}
+
+static void parse_experts(const std::string& spec) {
+    Experts.clear();
+    std::istringstream ss(spec);
+    std::string item;
+    while (std::getline(ss, item, ';')) {
+        size_t eq = item.find('='), colon = item.find(':');
+        if (eq == std::string::npos || colon == std::string::npos || colon > eq) continue;
+        ExpertRule r;
+        std::string kind = item.substr(0, colon), arg = item.substr(colon + 1, eq - colon - 1);
+        r.path = item.substr(eq + 1);
+        if (kind == "open") r.fam = arg;
+        else if (kind == "pcs" && sscanf(arg.c_str(), "%d-%d", &r.lo, &r.hi) == 2) {}
+        else continue;
+        Experts.push_back(r);
+    }
+}
+
+// load the net the rules pick for this root (no-op when it is already loaded)
+static bool select_expert(const Position& pos) {
+    std::string want = EvalPath;
+    int n = popcount(pos.occupied);
+    for (auto& r : Experts)
+        if (r.fam.empty() ? (n >= r.lo && n <= r.hi) : r.fam == GameFam) { want = r.path; break; }
+    if (want == LoadedPath) return true;
+    bool ok = nnue::load(want);
+    out_line(ok ? "info string expert net %s" : "info string ERROR could not load expert net %s", want.c_str());
+    if (ok) LoadedPath = want;
+    return ok;
+}
+
 static void set_position(std::istringstream& is, Position& pos, std::vector<uint64_t>& hist) {
     std::string tok, fen;
     is >> tok;
@@ -55,14 +99,18 @@ static void set_position(std::istringstream& is, Position& pos, std::vector<uint
     }
     pos = candidate;
     hist.assign(1, pos.key);
+    bool fromStart = fen == START_FEN;
+    std::string first[2];
     if (tok == "moves") {
         while (is >> tok) {
             Move m = parse_uci_move(pos, tok);
             if (!m) break;
+            if (fromStart && hist.size() <= 2) first[hist.size() - 1] = tok;
             pos.do_move(m);
             hist.push_back(pos.key);
         }
     }
+    GameFam = fromStart ? family_of(first[0], first[1]) : "";
 }
 
 static uint64_t perft(const Position& pos, int depth) {
@@ -187,6 +235,7 @@ int main(int argc, char** argv) {
     // default net next to the exe; the EvalFile option can load another one
     std::string netPath = exe_dir() + "/lite.nnue";
     bool netLoaded = nnue::load(netPath);
+    if (netLoaded) EvalPath = LoadedPath = netPath;
     if (!netLoaded) {
         printf("info string could not load network %s (set EvalFile)\n", netPath.c_str());
         fflush(stdout);
@@ -228,6 +277,7 @@ int main(int argc, char** argv) {
             out_line("option name SmallNetFile type string default <empty>");
             out_line("option name EvalFile type string default lite.nnue");
             out_line("option name SigmaFile type string default <empty>");
+            out_line("option name ExpertRules type string default <empty>");
             for (auto& t : tunables())
                 out_line("option name %s type spin default %d min %d max %d", t.name, t.def, t.lo, t.hi);
             out_line("uciok");
@@ -244,7 +294,11 @@ int main(int argc, char** argv) {
                 search::stop(); search::wait();
                 std::string path = value.find_first_of("/\\") == std::string::npos ? exe_dir() + "/" + value : value;
                 netLoaded = nnue::load(path);
+                if (netLoaded) EvalPath = LoadedPath = path;
                 out_line(netLoaded ? "info string loaded network %s" : "info string ERROR could not load network %s", path.c_str());
+            } else if (name == "ExpertRules") {
+                parse_experts(value == "<empty>" ? "" : value);
+                out_line("info string %d expert rules", (int)Experts.size());
             } else if (name == "SigmaFile") {
                 search::stop(); search::wait();
                 out_line(nnue::load_sigma(value) ? "info string sigma head %s loaded" : "info string ERROR could not load sigma head %s", value.c_str());
@@ -274,6 +328,7 @@ int main(int argc, char** argv) {
                 out_line("info string ERROR no network loaded");
                 return 1;
             }
+            if (!Experts.empty() && !select_expert(pos)) return 1;
             Limits lim;
             int64_t wtime = -1, btime = -1, winc = 0, binc = 0;
             while (is >> tok) {
