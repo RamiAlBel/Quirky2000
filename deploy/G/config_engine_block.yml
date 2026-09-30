@@ -1,0 +1,52 @@
+# Version G: replace the matching keys of the "engine:" block in lichess-bot/config.yml with these.
+# Change the two folder paths to wherever you put this folder (forward slashes, keep the trailing /).
+# Keep a backup of your old config.yml.
+engine:
+  dir: "C:/Users/<you>/Desktop/Games/Native NNUE Chess/G/"
+  name: "quirky_G.exe"
+  working_dir: "C:/Users/<you>/Desktop/Games/Native NNUE Chess/G/"
+  protocol: "uci"
+  ponder: true                     # think on the opponent's time (+107 Elo in tests); the book is not used while pondering
+  uci_options:
+    Threads: 8
+    Hash: 512
+    EvalFile: "W512_sf.nnue"       # NEW in F/G: the 512-wide sf net (E used C1.nnue); bare name = next to the exe
+    # --- NEW in G: Cerebellum opening book ---
+    BookFile: "Cerebellum3Merge.bin"  # download separately (see README.md), put it next to the exe
+    UseBook: 1
+    BookBest: 1                    # always play the book's best move (weight 255), not a weighted random one
+    BookDepth: 255                 # use the book for as long as the position is in it (E stopped after 20 plies)
+    # --- features (all accepted by SPRT, same as E) ---
+    UseFinny: 1                    # accumulator refresh cache (speed, exact)
+    UseLazyAcc: 1                  # lazy accumulator updates (speed, exact)
+    UseContHist: 1                 # continuation history (+26)
+    UseCaptHist: 1                 # capture history (+8)
+    UseTM: 1                       # time management (+55)
+    UseSingular: 1                 # singular extensions (+22)
+    SingMargin: 3
+    UseCorr2: 1                    # correction history v2 (+24)
+    UseDblExt: 1                   # double singular extensions (+21)
+    UseNodeTM: 1                   # time by node share of the best move (+15)
+    UseAspFH: 1                    # aspiration fail-high re-search 1 ply shallower (+11)
+    UseDeeper: 1                   # LMR re-search deeper/shallower (+12)
+    # --- SPSA-tuned search constants (same as E) ---
+    RfpMargin: 81
+    RfpImp: 24
+    NmpEvalDiv: 196
+    LmpBase: 4
+    FutBase: 99
+    FutMul: 114
+    SeeQuiet: 26
+    SeeNoisy: 99
+    HistDiv: 5715
+    LmrBase: 85
+    LmrDiv: 206
+    AspDelta: 17
+
+# Unchanged from E (keep what you have in config.yml):
+# - online tablebases, under engine: -> online_moves: -> online_egtb:
+#     enabled: true
+#     max_pieces: 7
+#     source: "lichess"
+#     move_quality: "best"
+# - lichess-bot's own polyglot book stays "enabled: false" (the engine reads Cerebellum itself).

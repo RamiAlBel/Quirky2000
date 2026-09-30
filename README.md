@@ -18,7 +18,8 @@ switch (default off), then tested against the current best with SPRT before it w
 | `experiments/` | **the record of what was tried**: index, per-area write-ups, raw ledger, option sets |
 | `docs/` | `ENGINE_DETAILS.txt` (what the engine does, in plain words), `CHANGES_E.txt` |
 | `weights/` | the sf-trained nets of the width sweep: 512, 1024 and 4096 wide (`weights/README.md` says how to build for each) |
-| `assets/` | the current net (`C1.nnue`, 5.9 MB) and an opening book (`book_jul2200.bin`) |
+| `assets/` | version E's net (`C1.nnue`, 5.9 MB) and its own opening book (`book_jul2200.bin`) |
+| `deploy/G/` | version G for the Windows lichess-bot PC: exe, net, config block, install steps |
 
 ## Build and run
 
@@ -34,8 +35,22 @@ position startpos
 go movetime 1000
 ```
 
-The tested configuration ("bundle E") is the set of UCI options in `experiments/options/E_opts.txt`
-(`EvalFile` there is a cluster path; use `assets/C1.nnue`). Bench with those options: depth 13, 574,687 nodes.
+## Versions
+
+| version | what changed | options |
+|---|---|---|
+| C1 | king-bucket net `C1.nnue` + all accepted search switches (+354 vs the first net) | |
+| D | SPSA-tuned search constants (+26 vs C1) | `D_opts.txt` |
+| E1 | D + correction history v2, double extensions, node-share time management (+49 vs D) | `E1_opts.txt` |
+| E | E1 + aspiration fail-high and deeper/shallower re-search (+19 vs E1). Net `assets/C1.nnue`, own book | `E_opts.txt` |
+| F | E's options with the sf-trained 512 net `weights/W512_sf.nnue` | `F_opts.txt` |
+| **G (current)** | F + the Cerebellum opening book (`UseBook=1 BookBest=1 BookDepth=255`), +102 vs E's book | `G_opts.txt` |
+
+Option files are in `experiments/options/`. `EvalFile`/`SyzygyPath` there are cluster paths.
+Bench (depth 13) with E's options: 574,687 nodes with `assets/C1.nnue`, 378,755 with `weights/W512_sf.nnue` (F, G).
+
+**Running G on the lichess-bot PC:** [`deploy/G/README.md`](deploy/G/README.md) (Windows exe, net, config block,
+where to get the Cerebellum book and how to check it).
 Everything the engine does, and the Elo each switch was worth, is in `docs/ENGINE_DETAILS.txt`.
 
 ## Strength, as measured
@@ -59,8 +74,11 @@ See [`experiments/README.md`](experiments/README.md). Short version:
   pondering, own opening book, Syzygy, SPSA-tuned constants.
 - **Rejected:** threat features (25% slower), wider/narrower nets than 512, pruning/distillation, an uncertainty head,
   ProbCut, razoring, phase-balanced or hard-example sampling, most extra history tables.
-- **In progress:** a 3 x 3 sweep of net width (512 / 1024 / 4096) against training-label source
-  (Lichess games with Stockfish evals / Lichess eval database / Leela self-play).
+- **Width x source sweep (done):** 512 / 1024 / 4096 wide nets on Stockfish-labelled Lichess games, the Lichess eval
+  database and Leela self-play. Stockfish labels won, and 1024/4096 were not stronger than 512 in games (`experiments/results/`).
+- **Specialised weights (stopped, no benefit):** more king buckets, factorizer, phase/colour weight sets, opening experts
+  (`experiments/05-specialised-weights.md`).
+- **Opening books:** Cerebellum chosen out of 12 books (`experiments/06-opening-books.md`).
 
 ## License
 

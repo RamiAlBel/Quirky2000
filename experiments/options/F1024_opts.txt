@@ -1,0 +1,1 @@
+UseFinny=1 UseLazyAcc=1 UseContHist=1 UseCaptHist=1 UseTM=1 UseSingular=1 SingMargin=3 RfpMargin=81 RfpImp=24 NmpEvalDiv=196 LmpBase=4 FutBase=99 FutMul=114 SeeQuiet=26 SeeNoisy=99 HistDiv=5715 LmrBase=85 LmrDiv=206 AspDelta=17 SyzygyPath=/scratch/ralbe/chess_nnue/exp2/data/syzygy EvalFile=weights/W1024_sf.nnue UseCorr2=1 UseDblExt=1 UseNodeTM=1 UseAspFH=1 UseDeeper=1

@@ -11,3 +11,4 @@ data/
 *.pt
 *.bin
 !assets/*.bin
+!deploy/*/*.exe

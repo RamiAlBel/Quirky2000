@@ -16,7 +16,7 @@
 |---|---|---|---|---|---|
 | W1024_sf | W1024_edb | 51 | +10 =37 -4 | +41 +/- 49 | stopped early |
 | W1024_sf | W1024_lc0 | 50 | +11 =34 -5 | +42 +/- 54 | stopped early |
-| W1024_sf | W512_sf | 174 | +11 =137 -26 | -30 +/- 24 | running |
+| W1024_sf | W512_sf | 380 | +45 =291 -44 | +1 +/- 16 | stopped at 380 games: no difference (SPRT LLR 0.04, bounds +-2.94) |
 
 ## Nets (val_mse on the Stockfish-labelled validation set, lower = better; not a strength measure)
 

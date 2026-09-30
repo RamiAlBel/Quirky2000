@@ -18,3 +18,31 @@ Ten games each. This is an indication only; 10 games cannot separate close nets.
 Speed at 16 threads on the cluster node (short `bench`): 512 6.1-7.4M nodes/s, 1024 5.5M, 4096 2.4M. The 4096 engine is
 about 3 times slower per node, the 1024 engine about 10% slower.
 The cluster node reached about 60% of the 10M nodes/s of the 16-thread PC this test is meant to imitate.
+
+## Blitz and rapid at the node budget of the 16-thread PC: E vs F (2026-09-30)
+
+E = the previous version (`C1.nnue`, `experiments/options/E_opts.txt`). F = the same options with an sf net:
+F512 = `W512_sf` (**version F**, `F_opts.txt`), F1024 = `W1024_sf`, F4096 = `W4096_sf` (`F1024_opts.txt`, `F4096_opts.txt`).
+16 threads and 1024 MB hash per engine, real clocks, 10 games per pairing: 5 openings from `8moves_v3`, each played
+with both colours. One Slurm job per opening (`cluster/pc_match.sh`, `cluster/pc_submit.sh`).
+
+**Clock.** The bot PC runs the 512 net at about 10M nodes/s on 16 threads. Before playing, each job measures its own
+16-thread speed with the 512 net (`bench`, best of 3) and scales the PC clock (blitz 3+2, rapid 10+5) by
+10M / measured speed. For example, a node at 6.5M nodes/s plays 3+2 as 277+3.1 s. The 1024 and 4096 nets are slower per node, as
+they would be on the PC. The PGNs store the nodes of every move, which gives the last column.
+
+| mode | A | B | games | A +W =D -L | Elo(A) +- 95% | median nodes/move E / F |
+|---|---|---|---|---|---|---|
+| blitz | E | F512 | 10 | +0 =9 -1 | -35 +- 66 | 44M / 42M |
+| blitz | E | F1024 | 10 | +0 =10 -0 | 0 | 41M / 33M |
+| blitz | E | F4096 | 10 | +0 =10 -0 | 0 | 28M / 11M |
+| rapid | E | F512 | running | | | |
+| rapid | E | F1024 | running | | | |
+| rapid | E | F4096 | running | | | |
+
+- **Almost every game is a draw.** At 30-120M nodes per move, E and F play at nearly the same level, and 10 games cannot separate them.
+  Both decisive games so far were won by F512 (one blitz, one rapid game).
+- The nodes per move are below the rough targets estimated beforehand (blitz about 65M, rapid about 200M, from
+  base/40 + increment). The engine's time management spends less than that per move, and the PC would spend the same fraction.
+
+Games: `matches/pcbudget_{blitz,rapid}_E_vs_F*_16threads.pgn`.
