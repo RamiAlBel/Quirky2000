@@ -37,7 +37,8 @@ TUNE(RazorMargin, 400, 100, 1000);
 TUNE(RazorMul, 250, 50, 500);
 TUNE(SyzygyProbeDepth, 1, 1, 10);  // Syzygy is active when SyzygyPath is set (UCI string option)
 TUNE(UseBook, 0, 0, 1);      // play from the Polyglot book set with BookFile (main.cpp)
-TUNE(BookDepth, 20, 0, 60);   // plies from the game start
+TUNE(BookDepth, 20, 0, 255);  // plies from the game start
+TUNE(BookBest, 0, 0, 1);      // 1 = always the highest-weight book move (Cerebellum/BrainFish style), 0 = weighted random
 TUNE(UseSmallNet, 0, 0, 1);            // 128-wide net (SmallNetFile) when material is lopsided
 TUNE(SmallNetThreshold, 1000, -1, 3000);  // |material balance| in cp above which the small net is used
 TUNE(UseTM, 0, 0, 1);        // soft/hard time limits + best-move stability

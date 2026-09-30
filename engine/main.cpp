@@ -6,7 +6,7 @@
 #include "tune.h"
 #include "book.h"
 
-extern int UseBook, BookDepth;  // search.cpp tunables
+extern int UseBook, BookDepth, BookBest;  // search.cpp tunables
 #include <iostream>
 #include <sstream>
 #include <string>
@@ -352,7 +352,7 @@ int main(int argc, char** argv) {
             }
             // own book: answer instantly while in book (hist holds one key per position since the start)
             if (UseBook && book::loaded() && (int)hist.size() - 1 < BookDepth && !lim.ponder) {
-                if (Move bm = book::probe(pos)) {
+                if (Move bm = book::probe(pos, BookBest)) {
                     out_line("bestmove %s", move_to_uci(bm).c_str());
                     continue;
                 }

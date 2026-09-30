@@ -62,9 +62,15 @@ static Move decode(const Position& pos, uint16_t pm) {
     return 0;
 }
 
-Move probe(const Position& pos) {
+Move probe(const Position& pos, bool best) {
     uint64_t k = key(pos);
     auto lo = std::lower_bound(entries.begin(), entries.end(), k, [](const Entry& e, uint64_t v) { return e.key < v; });
+    if (best) {  // highest weight; ties -> first in file
+        auto top = entries.end();
+        for (auto it = lo; it != entries.end() && it->key == k; ++it)
+            if (it->weight && (top == entries.end() || it->weight > top->weight)) top = it;
+        return top == entries.end() ? 0 : decode(pos, top->move);
+    }
     uint32_t total = 0;
     for (auto it = lo; it != entries.end() && it->key == k; ++it) total += it->weight;
     if (!total) return 0;
