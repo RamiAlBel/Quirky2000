@@ -36,12 +36,13 @@ they would be on the PC. The PGNs store the nodes of every move, which gives the
 | blitz | E | F512 | 10 | +0 =9 -1 | -35 +- 66 | 44M / 42M |
 | blitz | E | F1024 | 10 | +0 =10 -0 | 0 | 41M / 33M |
 | blitz | E | F4096 | 10 | +0 =10 -0 | 0 | 28M / 11M |
-| rapid | E | F512 | running | | | |
-| rapid | E | F1024 | running | | | |
-| rapid | E | F4096 | running | | | |
+| rapid | E | F512 | 10 | +0 =9 -1 | -35 +- 66 | 147M / 148M |
+| rapid | E | F1024 | 10 | +0 =10 -0 | 0 | 105M / 89M |
+| rapid | E | F4096 | 10 | +0 =10 -0 | 0 | 128M / 42M |
 
-- **Almost every game is a draw.** At 30-120M nodes per move, E and F play at nearly the same level, and 10 games cannot separate them.
-  Both decisive games so far were won by F512 (one blitz, one rapid game).
+- **58 of 60 games were draws.** At 30-150M nodes per move with 16 threads, E and all three F nets play at nearly the same
+  level, and 10 games per pairing cannot separate them. Both decisive games were won by F512 (one blitz, one rapid game),
+  which is weak support for making F512 the official net. The wider nets gave no visible gain: F1024 and F4096 drew all 40 of their games.
 - The nodes per move are below the rough targets estimated beforehand (blitz about 65M, rapid about 200M, from
   base/40 + increment). The engine's time management spends less than that per move, and the PC would spend the same fraction.
 
