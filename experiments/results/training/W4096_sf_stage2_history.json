@@ -1,0 +1,27 @@
+{
+ "src": "W4096_sf",
+ "cfg": {
+  "acc": 4096,
+  "featset": "hkb",
+  "nkb": 8,
+  "psqt": false,
+  "h1": 8,
+  "h2": 0,
+  "nb": 8,
+  "ft_act": "pair",
+  "hid_act": "dual",
+  "cp_scale": 350,
+  "ft8": false
+ },
+ "hist": [
+  {
+   "stage": "head",
+   "val_mse": 0.03759965128707886
+  },
+  {
+   "stage": "polish",
+   "val_mse": 0.037477488954544065
+  }
+ ],
+ "best": 0.037477488954544065
+}

@@ -42,15 +42,18 @@ Short indications, not results (matches stopped early, error bars 50 Elo or more
 | 1024 sf | 1024 lc0 | 50 | +11 =34 -5 | +42 +-54 |
 
 Running when this was written: **1024 sf vs 512 sf** (45 games so far, 1024 at -31 +-47, i.e. no difference yet).
-Still training: 4096 sf and 4096 lc0. They will play once done. Time control 60+0.5 is only 1.7M nodes per move; a test at a
+Still training: 4096 lc0. 4096 sf is finished (weights in `../weights/`, results in `results/`). Time control 60+0.5 is only 1.7M nodes per move; a test at a
 real node budget (10M nodes/s, 16 threads: about 15M nodes per move in bullet, 65M in blitz) is planned to see whether the
 speed cost of the wide nets shrinks at a realistic budget.
+
+Bullet with the thread count of the target PC (1+0, 16 threads per engine), 10 games each, indications only:
+1024 sf vs 512 sf +2 =7 -1; **4096 sf vs 512 sf +0 =7 -3** (about 3x slower per node at 16 threads). See `results/README.md`.
 
 ## Validation error (Stockfish-labelled held-out set; favours the Stockfish-trained nets)
 
 | source | 512 | 1024 | 4096 |
 |---|---|---|---|
-| sf | 0.04013 | 0.03826 | pending |
+| sf | 0.04013 | 0.03826 | **0.03748** |
 | edb | 0.04766 | 0.04704 | 0.04589 |
 | lc0 | 0.05502 | 0.05515 | pending |
 

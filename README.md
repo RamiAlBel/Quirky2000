@@ -17,6 +17,7 @@ switch (default off), then tested against the current best with SPRT before it w
 | `tools/` | SPSA tuner, PGN scoring, ponder match, Leela binpack to training-record converter |
 | `experiments/` | **the record of what was tried**: index, per-area write-ups, raw ledger, option sets |
 | `docs/` | `ENGINE_DETAILS.txt` (what the engine does, in plain words), `CHANGES_E.txt` |
+| `weights/` | the sf-trained nets of the width sweep: 512, 1024 and 4096 wide (`weights/README.md` says how to build for each) |
 | `assets/` | the current net (`C1.nnue`, 5.9 MB) and an opening book (`book_jul2200.bin`) |
 
 ## Build and run

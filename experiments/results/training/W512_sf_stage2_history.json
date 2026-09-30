@@ -1,0 +1,27 @@
+{
+ "src": "W512_sf",
+ "cfg": {
+  "acc": 512,
+  "featset": "hkb",
+  "nkb": 8,
+  "psqt": false,
+  "h1": 8,
+  "h2": 0,
+  "nb": 8,
+  "ft_act": "pair",
+  "hid_act": "dual",
+  "cp_scale": 350,
+  "ft8": false
+ },
+ "hist": [
+  {
+   "stage": "head",
+   "val_mse": 0.04024883551979065
+  },
+  {
+   "stage": "polish",
+   "val_mse": 0.040129422986984256
+  }
+ ],
+ "best": 0.040129422986984256
+}
