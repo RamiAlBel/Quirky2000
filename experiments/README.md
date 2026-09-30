@@ -23,6 +23,7 @@ the current baseline in a test; otherwise it is rejected or left as neutral.
 | [`02-engine-and-search.md`](02-engine-and-search.md) | accepted engine/search/time/book changes with their Elo |
 | [`03-rejected-and-neutral.md`](03-rejected-and-neutral.md) | everything that did not help, and what it cost |
 | [`04-width-x-source-sweep.md`](04-width-x-source-sweep.md) | current experiment: net width x training-label source |
+| [`05-specialised-weights.md`](05-specialised-weights.md) | king buckets 16/32, factorizer, phase/colour weight sets, opening expert nets: stopped, no benefit |
 | [`LEDGER.md`](LEDGER.md) | the raw log, in the order things happened (cluster paths and job ids left in) |
 | [`options/`](options) | the exact UCI option sets of bundles D, E1 and E |
 

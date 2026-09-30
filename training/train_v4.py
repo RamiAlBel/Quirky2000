@@ -26,6 +26,10 @@ p.add_argument("--acc", type=int, default=512)
 p.add_argument("--features", default="halfkp", choices=N.FEATSETS)
 p.add_argument("--kb", type=int, default=32, choices=[8, 16, 32])
 p.add_argument("--psqt", type=int, default=0)
+p.add_argument("--sets", default="none", choices=N.SETS, help="several FT weight sets chosen by phase/colour (LNN5)")
+p.add_argument("--fact", type=int, default=0, help="factorizer: shared piece-square table added to every bucket/set")
+p.add_argument("--init", default="", help="start from this net's last.pt (fine-tuning); FT copied into every set")
+p.add_argument("--subset", default="", help="train only on records of a category (see subsets.py), e.g. open:e4e5")
 p.add_argument("--ft_act", default="crelu", choices=N.FT_ACTS)
 p.add_argument("--h1", type=int, default=8)
 p.add_argument("--h2", type=int, default=0)
@@ -62,10 +66,18 @@ def main():
     srcs = [SOURCES[k]() for k, _ in spec]
     val_src = srcs[[k for k, _ in spec].index("old")] if "old" in [k for k, _ in spec] else SOURCES["old"]()
     strata = (args.strata.split(":")[0], float(args.strata.split(":")[1])) if args.strata else None
-    data = N.Data(srcs, [w for _, w in spec], args.features, args.kb, strata=strata)
+    if args.subset:
+        import subsets
+        for sc in srcs:
+            subsets.restrict(sc, args.subset)
+    data = N.Data(srcs, [w for _, w in spec], args.features, args.kb, strata=strata, sets=args.sets)
     data.val = data.make(val_src, np.arange(val_src.n_train, val_src.n_train + val_src.val_n))
     net = N.Net4(acc=args.acc, featset=args.features, nkb=args.kb, psqt=args.psqt, h1=args.h1, h2=args.h2,
-                 nb=args.nb, ft_act=args.ft_act, hid_act=args.hid_act, cp_scale=args.cp_scale, ft8=args.ft8).to(dev)
+                 nb=args.nb, ft_act=args.ft_act, hid_act=args.hid_act, cp_scale=args.cp_scale, ft8=args.ft8,
+                 sets=args.sets, fact=args.fact).to(dev)
+    if args.init and not os.path.exists(f"{OUT}/last.pt"):
+        import subsets
+        subsets.init_from(net, args.init)
     opt = torch.optim.Adam(net.parameters(), lr=args.lr, fused=True)
     ema = copy.deepcopy(net) if args.ema else None
     steps = args.epoch_pos // args.batch

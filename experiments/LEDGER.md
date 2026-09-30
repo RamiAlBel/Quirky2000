@@ -147,3 +147,40 @@ SPRT 6+0.06, elo0 0 / elo1 6. Bench with all E switches off = 489384 (identical 
 | **bundle E** (2026-09-28 04:43) | /scratch/ralbe/chess_nnue/bundle_E(.zip): src c4cff49 (zig x86_64-windows-gnu), C1 net, D book; E = D + UseCorr2 UseDblExt UseNodeTM UseAspFH UseDeeper (ledger/E_opts.txt); bench 13 = 574687 nodes | built early on request (aspfh/deeper not concluded) | checks running: E_vs_E1 (6+0.06), E_vs_D_t8 (8 threads, 10+0.1) |
 | E-aspfh / E-deeper | SPRT H1 vs D: +11.3 [+4,+18] (3549 g) / +12.5 [+5,+20] (3533 g) | **ACCEPT** (bundle E notes updated) |
 | final (cancelled 05:06 on request, no SPRT verdict) | E vs E1 6+0.06: +18.9 [+5.9,+32.0] @790 g; E vs D 8 threads 10+0.1: +66.2 [+34.5,+99.0] @85 g; E1 vs D 40+0.4: +45.5 [+29.2,+61.9] @369 g | all clearly positive -> bundle E confirmed |
+
+## Round G (2026-09-30): specialised weights vs W512_sf (baseline = bundle E options + nets/W512_sf_s2, bin/G)
+Question (user): do several weight sets used in different situations beat the single 512 sf net?
+In-search selection (per position, per perspective): more king buckets (16/32), factorizer, FT copies per phase band
+or per colour (LNN5, engine commit 45d2cbb). Game-level selection: expert nets fine-tuned from W512_sf_s2 on one
+opening family (first two plies) or one phase, loaded by the engine when the game is in that category (ExpertRules,
+commit ba8e63c). Data: data/open/sfo.bin + sfo.meta (sf re-extracted with ECO / game id / first plies); the latest
+10k games are held out (eval_cats.py, subsets.py). SPRT: gsprt.sh, 6+0.06, [0,5].
+Baseline error profile (sf held-out 1M, MSE tanh(cp/400)): all 0.04136; by pieces 2-8/9-16/17-24/25-32 =
+0.043/0.056/0.057/0.026; king castled-kingside back rank 0.037 vs elsewhere 0.055-0.070; opening families
+0.039-0.0425 (flat); rating <1400 0.039 .. >=2200 0.045.
+| id | idea | val (old / sf held-out) | result | decision |
+|---|---|---|---|---|
+| X-experts | fine-tune W512_sf_s2 on one opening family / phase (2 x 30M, lr 1e-4), control = same on all data (X_ctl, X_ctl2 agree to 0.02%) | own-category MSE vs control: e4e5 -0.7%, sicil -0.7%, d4d5 -0.4%, flank -0.2%, e4oth -0.1%, d4nf6 +0.5%, d4oth +0.5% (small sets overfit); end (2-16 pcs) -0.6% on 2-16, mid 0%; every expert worse outside its category (runs/G_cats_X*.json) | SPRTs on own-family books (tools/books_fam) running | |
+| G_ctl (replicate of W512_sf) | same recipe, new init | s2 0.04027 (W512_sf 0.04013) -> run-to-run noise ~0.35% | | reference |
+| G_kb16 | 16 king buckets | s2 **0.03997** (-0.4% vs W512_sf, -0.7% vs G_ctl); xcheck OK; bench 460081, -1.4% nps | SPRT kb16 running | |
+| G_kb32 | 32 king buckets | s2 0.04014 (= W512_sf); xcheck OK | SPRT kb32 running | |
+| G_kb8f | factorizer, 8 buckets | s2 0.04022 (lead of -3% at epoch 10 gone by epoch 20: only speeds early learning) | no SPRT (same inference net, equal val) | NEUTRAL |
+| sf held-out check (eval_cats, 1M) | all G nets so far within +-0.2% of W512_sf (0.04136): ctl 0.04143, kb16 0.04127, kb32 0.04139, kb8f 0.04142, ph2 0.04145; kb16/32/ph2 better at 2-8 pcs (0.041 vs 0.043) but not at 9-24 where the error is | | |
+| G_ph2 | 2 phase FT sets (>=17 / <=16 pcs), no factorizer | s2 0.04020, sf held-out 0.04145 (trades 2-8/25-32 for 9-24) | no SPRT | REJECT (no gain) |
+| G_ph4f | 4 phase FT sets + factorizer | stage1 0.04010 (= W512_sf 0.04005) with train loss 0.0290 vs 0.0336 -> memorises; s2 0.04093 | no SPRT | REJECT (worse) |
+| **kb16 SPRT** | G_kb16_s2 vs W512_sf, 6+0.06 | SPRT H0: Elo -8.47 +/- 5.84 (3940 g) | REJECT |
+| **kb32 SPRT** | G_kb32_s2 vs W512_sf | SPRT H0: Elo -11.21 +/- 6.73 (3132 g) | REJECT |
+| **X_d4oth SPRT** | d4oth expert, d4oth book | SPRT H0: Elo -7.02 +/- 5.56 (4750 g) | REJECT |
+| G_kb16f | 16 buckets + factorizer | stage1 **0.03939** (W512_sf stage1 0.04005, -1.6%) but s2 0.04030: the 8-neuron head loses the gain (W512_sf loses 0.2% in stage 2, kb16f 2.3%) | stage-2 variants: longer head fit (s2a), h1 16 (s2h16) | |
+| Cerebellum book | /scratch/ralbe/chess_nnue/cerebellum/.../Cerebellum3Merge.bin (Cerebellum Light 3Merge 2020-09-16, BrainFish; Polyglot, 11.1M entries / 11.0M positions, weight 255 = best / 127 = alternative, Stockfish-analysed, score-consistent; CC BY-NC-SA 4.0). Engine: BookBest=1 (always top weight) + BookDepth up to 255 (src a9d88fb, bench unchanged). In games: 5-19 book moves vs own book <= 10 | SPRTs from startpos: cereb_vs_own, cereb_vs_none; with 8moves openings: cereb_vs_none_8mv | running | |
+| Cerebellum early (~400 g each, pgnscore) | vs own book from startpos +99.8 [+81,+119] (W121 D266 L10, 293 distinct 16-ply openings); vs none from startpos +121 but only 4 distinct openings -> cancelled (uninformative); vs none with 8moves openings +22 [+4,+41] | | |
+| X_e4e5 SPRT (stopped for the book tournament) | own-family book | G_X_e4e5_589562 n= 8410 W964 D6519 L927 +1.5 [ -2.0, +5.0] | NEUTRAL (no evidence of gain) |
+| X_sicil SPRT (stopped for the book tournament) | own-family book | G_X_sicil_589563 n= 8324 W1069 D6137 L1118 -2.0 [ -5.9, +1.8] | NEUTRAL (no evidence of gain) |
+| X_d4d5 SPRT (stopped for the book tournament) | own-family book | G_X_d4d5_589567 n= 8317 W966 D6433 L918 +2.0 [ -1.5, +5.6] | NEUTRAL (no evidence of gain) |
+| X_d4nf6 SPRT (stopped for the book tournament) | own-family book | G_X_d4nf6_589568 n= 7946 W1281 D5334 L1331 -2.2 [ -6.6, +2.2] | NEUTRAL (no evidence of gain) |
+| X_flank SPRT (stopped for the book tournament) | own-family book | G_X_flank_589574 n= 7856 W1340 D5193 L1323 +0.8 [ -3.7, +5.2] | NEUTRAL (no evidence of gain) |
+| X_e4oth SPRT (stopped for the book tournament) | own-family book | G_X_e4oth_589575 n= 7895 W1427 D5041 L1427 -0.0 [ -4.6, +4.6] | NEUTRAL (no evidence of gain) |
+| **cereb_vs_own SPRT** | Cerebellum (BookBest, depth 255) vs own book_jul2200 (deployed), from startpos, 6+0.06 | SPRT H1: Elo 102.30 +/- 15.19 (553 g, W171 D370 L12) | **ACCEPT** (self-play upper bound for Lichess) |
+| Book round robin (books/rr.sh, engines_s1.txt) | 10 downloaded/own Polyglot books (best-move) + own deployed (weighted, 20 plies) + no book; seeds books/seeds4ply.pgn = top-200 4-ply lines of 2000+ Lichess games (76% of games); stage 1 = 4 shards x 660 games; joint Bradley-Terry fit, then elimination | | running |
+| G stage-2 variants (factorizer nets) | s2 val (ctl 0.04027): kb8f 0.04022, kb16f 0.04030, kb16f_s2a (longer head fit) 0.04044, kb16f_s2h16 (h1 16) 0.03991 (no h16 control), kb32f 0.04177, ph2f 0.04029, ph3f 0.04054, colf 0.04179, ph4f 0.04093. Stage-1 leads (kb8f 0.03923, kb32f 0.03933, kb16f 0.03939 vs ctl 0.03967) all gone after stage 2 | cause found: folded row+fac reaches +-2 (~1% of weights > FT_CLIP) and stage 2 clamped them to +-1 every step. Fix: Net4.ft_clip, stage2 uses 2*FT_CLIP for folded factorizer nets (nnue4.py, stage2.py) | |
+| **STOPPED by user (2026-09-30 21:50): king buckets + opening experts** | kb16/kb32 SPRT H0 (-8.5, -11.2); opening experts neutral (-2.2 .. +2.0 at ~8k games), d4oth H0 -7.0; factorizer (kb8f/16f/32f) no gain after stage 2. Re-runs of kb8f/kb16f/kb32f stage 2 with the clip fix (589917-589919) cancelled before they finished, so the fixed factorizer was not measured | | **REJECT: searched, no benefit** |

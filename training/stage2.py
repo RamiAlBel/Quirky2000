@@ -30,10 +30,11 @@ def main():
     dev = torch.device("cuda")
     s = torch.load(f"{X}/nets/{args.src}/last.pt", map_location="cpu", weights_only=False)
     src_args = s["args"]
-    cfg = dict(s["cfg"])
+    cfg, sd = N.load_folded(s["ema"] or s["net"], s["cfg"])  # factorizer folded into the FT
     cfg.update(h1=args.h1, h2=args.h2, nb=args.nb, hid_act=args.hid_act, cp_scale=args.cp_scale)
     net = N.Net4(**cfg)
-    sd = s["ema"] or s["net"]
+    if s["cfg"].get("fact"):
+        net.ft_clip = 2 * N.FT_CLIP  # folded rows reach +-2; clamping them to +-1 threw away the factorizer's gain
     with torch.no_grad():
         net.ft.copy_(sd["ft"]); net.ftb.copy_(sd["ftb"])
         if net.psqt is not None:
@@ -44,7 +45,12 @@ def main():
     spec = [(k, float(w)) for k, w in (x.split(":") for x in data_spec.split(","))]
     st = src_args.get("strata") or ""
     strata = (st.split(":")[0], float(st.split(":")[1])) if st else None  # keep stage 1's sampling
-    data = N.Data([SOURCES[k]() for k, _ in spec], [w for _, w in spec], cfg["featset"], cfg["nkb"], strata=strata)
+    srcs = [SOURCES[k]() for k, _ in spec]
+    if src_args.get("subset"):
+        import subsets
+        for sc in srcs:
+            subsets.restrict(sc, src_args["subset"])
+    data = N.Data(srcs, [w for _, w in spec], cfg["featset"], cfg["nkb"], strata=strata, sets=cfg.get("sets", "none"))
     vs = SOURCES["old"]()
     data.val = data.make(vs, np.arange(vs.n_train, vs.n_train + vs.val_n))
     out = f"{X}/nets/{args.dst}"

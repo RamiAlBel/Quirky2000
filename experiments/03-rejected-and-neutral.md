@@ -29,6 +29,12 @@ See the table in [`01-nets.md`](01-nets.md): threat features (-29 Elo, 25% slowe
 pruning and distillation, PSQT shortcut, int8 feature weights, EMA, loss power 2.5, hard-example and phase-balanced
 sampling, 16-neuron head, alternative output-bucket rules, 80 epochs.
 
+## Specialised weights (Round G, stopped 2026-09-30)
+
+See [`05-specialised-weights.md`](05-specialised-weights.md). 16 king buckets -8.5 +-5.8 (H0), 32 king buckets
+-11.2 +-6.7 (H0), factorizer no gain after stage 2, opening expert nets neutral (-2.2 .. +2.0 at about 8k games each)
+and 1.d4-other -7.0 (H0). Searched, no benefit; stopped by decision.
+
 ## Dropped by decision
 
 GPU net variants with a WDL blend (0.2 / 0.4) and a net on the Lichess eval database were cancelled before they
