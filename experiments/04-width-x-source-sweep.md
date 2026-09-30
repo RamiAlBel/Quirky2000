@@ -26,12 +26,25 @@ Nets play as *winner stays on*: the champion meets the latest finished net, the 
 |---|---|---|---|---|---|
 | 512 edb | 512 lc0 | 371 | +94 =212 -65 | +27 +-23 | edb |
 | 512 sf | 512 edb | 371 | +105 =234 -32 | +69 +-21 | **sf** |
+| 512 sf | 4096 edb | 299 | +137 =155 -7 | +162 +-26 | **512 sf** (match stopped by hand) |
 
 At 512 the order is **sf > edb > lc0** (sf vs lc0 not played directly).
 
-Still running when this was written: 512 sf vs 4096 edb (275 games, sf ahead by a large margin, which includes the
-speed cost of a 4096-wide net at a fixed time control), and the three 1024-wide pairings. Results for the rest
-will be added here.
+The 4096 result is mostly speed plus the weaker source: on the same benchmark (depth 13, 1 thread) the 512 engine runs at
+about 970k nodes/s and the 4096 engine at about 411k, and edb already lost to sf by 69 Elo at the same width. Every game
+ended normally (no illegal moves, crashes or time forfeits). The width effect alone is measured by the sf-only pairs below.
+
+Short indications, not results (matches stopped early, error bars 50 Elo or more):
+
+| A | B | games | A +W =D -L | Elo(A) |
+|---|---|---|---|---|
+| 1024 sf | 1024 edb | 51 | +10 =37 -4 | +41 +-49 |
+| 1024 sf | 1024 lc0 | 50 | +11 =34 -5 | +42 +-54 |
+
+Running when this was written: **1024 sf vs 512 sf** (45 games so far, 1024 at -31 +-47, i.e. no difference yet).
+Still training: 4096 sf and 4096 lc0. They will play once done. Time control 60+0.5 is only 1.7M nodes per move; a test at a
+real node budget (10M nodes/s, 16 threads: about 15M nodes per move in bullet, 65M in blitz) is planned to see whether the
+speed cost of the wide nets shrinks at a realistic budget.
 
 ## Validation error (Stockfish-labelled held-out set; favours the Stockfish-trained nets)
 

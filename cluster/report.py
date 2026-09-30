@@ -16,6 +16,27 @@ L = ["# Width x source sweep - results", "", f"**Current champion: {st['champ']}
 for m in st["matches"]:
     w, l, d = m["a_wins"], m["b_wins"], m["draws"]
     L.append(f"| {m['a']} | {m['b']} | {w+l+d} | +{w} ={d} -{l} | {elo(w,l,d):+.0f} +/- {err(w,l,d):.0f} | {m['winner']} |")
+import glob, re, subprocess
+running = subprocess.run("squeue -h -u ralbe -o %j", shell=True, capture_output=True, text=True).stdout.split()
+seen = {(m["a"], m["b"]) for m in st["matches"]}
+extra = []
+for d_ in sorted(glob.glob(f"{X}/runs/m_*")):
+    mm = re.match(r"m_(W\d+_\w+?)_vs_(W\d+_\w+?)(_rr|_direct)?$", os.path.basename(d_))
+    f = d_ + "/games.pgn"
+    if not mm or not os.path.exists(f) or ((mm[1], mm[2]) in seen or (mm[2], mm[1]) in seen): continue
+    a, b = mm[1], mm[2]; w = {a: 0, b: 0}; dr = 0
+    for wh, bl, r in re.findall(r'\[White "(.*?)"\]\s*\[Black "(.*?)"\]\s*\[Result "(.*?)"\]', open(f).read()):
+        if r == "1-0": w[wh] += 1
+        elif r == "0-1": w[bl] += 1
+        elif r == "1/2-1/2": dr += 1
+    if w[a] + w[b] + dr:
+        live = any(j.endswith(f"{a}_vs_{b}") and j[:2] in ("m_", "r_", "d_") for j in running)
+        extra.append((a, b, w[a], w[b], dr, "running" if live else "stopped early"))
+if extra:
+    L += ["", "## Other head-to-head matches (not part of the ladder path; short ones are indications only)", "",
+          "| A | B | games | A +W =D -L | Elo(A) +/- | status |", "|---|---|---|---|---|---|"]
+    for a, b, wa, wb, dr, stt in extra:
+        L.append(f"| {a} | {b} | {wa+wb+dr} | +{wa} ={dr} -{wb} | {elo(wa,wb,dr):+.0f} +/- {err(wa,wb,dr):.0f} | {stt} |")
 L += ["", "## Nets (val_mse on the Stockfish-labelled validation set, lower = better; not a strength measure)", "",
       "| net | epochs done | final val_mse (after stage 2) |", "|---|---|---|"]
 for src in ("sf", "edb", "lc0"):
