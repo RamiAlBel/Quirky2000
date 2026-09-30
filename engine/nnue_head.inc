@@ -24,20 +24,22 @@ bool load(const std::string& path) {
     FILE* f = fopen(path.c_str(), "rb");
     if (!f) return false;
     char magic[4];
-    int acc = 0, rows = 0, h1 = 0, h2 = 0, nb = 1, fa = 0, ha = 0, fs = 0, nkb = 32, psqt = 0;
+    int acc = 0, rows = 0, h1 = 0, h2 = 0, nb = 1, fa = 0, ha = 0, fs = 0, nkb = 32, psqt = 0, sets = 0;
     float scale = 0, cps = 400.0f, psqtScale = 0;
     bool ok = fread(magic, 1, 4, f) == 4;
-    bool v4 = ok && memcmp(magic, "LNN4", 4) == 0;
+    bool v5 = ok && memcmp(magic, "LNN5", 4) == 0;  // LNN4 + weight-set selector (training/nnue4.py SETS)
+    bool v4 = ok && (memcmp(magic, "LNN4", 4) == 0 || v5);
     bool v3 = ok && (memcmp(magic, "LNN3", 4) == 0 || v4), v2 = ok && memcmp(magic, "LNN2", 4) == 0;
     ok = (v2 || v3) && fread(&acc, 4, 1, f) == 1 && fread(&rows, 4, 1, f) == 1 && fread(&h1, 4, 1, f) == 1 &&
          fread(&h2, 4, 1, f) == 1;
     if (ok && v3) ok = fread(&nb, 4, 1, f) == 1 && fread(&fa, 4, 1, f) == 1 && fread(&ha, 4, 1, f) == 1;
     if (ok && v4) ok = fread(&fs, 4, 1, f) == 1 && fread(&nkb, 4, 1, f) == 1 && fread(&psqt, 4, 1, f) == 1;
+    if (ok && v5) ok = fread(&sets, 4, 1, f) == 1 && sets >= 0 && sets <= 4 && fs >= 1;
     ok = ok && fread(&scale, 4, 1, f) == 1;
     if (ok && v3) ok = fread(&cps, 4, 1, f) == 1;
     if (ok && v4) ok = fread(&psqtScale, 4, 1, f) == 1;
     int clampQ = scale > 0 ? (int)std::lround(1.0 / scale) : 0;
-    int nfeat = fs == 0 ? 40960 : nkb * (fs == 2 ? 1408 : 704);
+    int nfeat = fs == 0 ? 40960 : nkb * (fs == 2 ? 1408 : 704) * SetCount[sets];
     ok = ok && (fs == 0 || ((fs == 1 || fs == 2) && (nkb == 8 || nkb == 16 || nkb == 32))) && rows == nfeat + 1 &&
          acc == NNUE_ACC && h1 > 0 && h1 % 4 == 0 && h1 <= MAX_H1 && h2 >= 0 &&
          h2 % 8 == 0 && h2 <= MAX_H2 && nb >= 1 && nb <= MAX_NB && fa >= 0 && fa <= 2 && ha >= 0 && ha <= 2 &&
@@ -74,7 +76,7 @@ bool load(const std::string& path) {
         FT[i] = (ft_t)ft16[i];
     }
     FtScale = scale; CpScale = cps;
-    FeatSet = fs; PsqtOn = psqt; NB_psqt = nb; PsqtScale = psqtScale;
+    FeatSet = fs; PsqtOn = psqt; NB_psqt = nb; PsqtScale = psqtScale; SetSel = sets; NKB = nkb;
     if (fs >= 1)
         for (int sq = 0; sq < 64; sq++) {
             int r = sq >> 3, fl = std::min(sq & 7, 7 - (sq & 7));

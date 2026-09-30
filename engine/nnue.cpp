@@ -19,7 +19,19 @@ static float FtScale = 0;
 // 2 THR: HKB x (piece attacked by the opponent or not): 22 planes. The 24 piece-code x attacked
 //   bitboards of parent and child are diffed on every update (moves change attack status non-locally)
 static int FeatSet = 0, PsqtOn = 0, NB_psqt = 1;
-static int KB[64];
+static int KB[64], NKB = 8;
+// weight sets (LNN5): one FT copy per set, chosen per perspective; 0 none, 1 phase2 (pieces >= 17 -> 0),
+// 2 phase4 ((pieces-1)*4/32), 3 phase3 (>= 25 / 17..24 / <= 16), 4 colour of the perspective
+static int SetSel = 0;
+static const int SetCount[5] = {1, 2, 4, 3, 2};
+static inline int set_of(const Position& pos, int persp) {
+    if (SetSel == 0) return 0;
+    if (SetSel == 4) return persp;
+    int n = popcount(pos.occupied);
+    if (SetSel == 1) return n >= 17 ? 0 : 1;
+    if (SetSel == 2) return (n - 1) * 4 / 32;
+    return n >= 25 ? 0 : n >= 17 ? 1 : 2;
+}
 static int32_t* PSQT = nullptr;  // [rows][NB_psqt]
 static float PsqtScale = 0;
 
@@ -28,8 +40,8 @@ static inline View view_of(const Position& pos, int persp) {
     int k = pos.king_sq(persp) ^ (persp == BLACK ? 56 : 0);
     if (FeatSet == 0) return {k * 640, persp == BLACK ? 56 : 0, k};
     int mirror = (k & 7) >= 4 ? 7 : 0;
-    int b = KB[k ^ mirror];
-    return {b * (FeatSet == 2 ? 1408 : 704), (persp == BLACK ? 56 : 0) ^ mirror, b * 2 + (mirror ? 1 : 0)};
+    int b = KB[k ^ mirror], s = set_of(pos, persp);
+    return {(s * NKB + b) * (FeatSet == 2 ? 1408 : 704), (persp == BLACK ? 56 : 0) ^ mirror, s * 64 + b * 2 + (mirror ? 1 : 0)};
 }
 static Bitboard attacks_by(const Position& p, int c) {
     Bitboard a = 0, occ = p.occupied, b;
@@ -117,7 +129,7 @@ struct alignas(64) FinnyEntry {
     int32_t psqt[8];
     Bitboard pcs[24];  // feature sets (piece codes; THR: code x attacked)
 };
-static thread_local FinnyEntry Finny[2][64];
+static thread_local FinnyEntry Finny[2][4 * 64];  // [persp][set * 64 + bucket * 2 + mirrored]
 static thread_local int FinnyGen = -1;
 
 static void refresh_cached(const Position& pos, Accumulator& acc, int persp) {
@@ -189,7 +201,7 @@ void update(const Position& parent, Move m, const Position& child, const Accumul
     if (FeatSet == 2) { threat_sets(parent, ps); threat_sets(child, cs); }
     for (int persp = 0; persp < 2; persp++) {
         View vw = view_of(child, persp);
-        if (pt == KING && persp == us) {
+        if ((pt == KING && persp == us) || (SetSel >= 1 && SetSel <= 3 && capPc != NO_PIECE)) {  // bucket/set may change
             View pv = view_of(parent, persp);
             if (FeatSet == 0 || pv.base != vw.base || pv.flip != vw.flip) {
                 if (UseFinny) refresh_cached(child, out, persp);
