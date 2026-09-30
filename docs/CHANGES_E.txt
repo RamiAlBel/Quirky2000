@@ -1,0 +1,25 @@
+Bundle E vs bundle D
+====================
+Same net (C1.nnue) and book. Five new search features, each a UCI switch tested alone against the D configuration
+(SPRT, fastchess, 6s+0.06s, 1 thread, engine vs itself):
+
+1. UseCorr2 1 - correction history v2.                                     +24.1 +-9.9 Elo (SPRT accepted, 1548 games)
+   Learns, per pawn structure and per non-pawn piece set, how far the net's static eval is usually off, and
+   corrects it. (The old correction history from C1/D summed errors without ever forgetting them, so it
+   saturated and lost Elo; v2 keeps a running weighted average.)
+2. UseDblExt 1 - double singular extensions.                               +20.7 +-8.6 Elo (SPRT accepted, 1566 games)
+   A clearly forced move is searched two plies deeper instead of one (at most 6 times per line, non-PV nodes).
+3. UseNodeTM 1 - time by node share.                                       +14.9 +-7.1 Elo (SPRT accepted, 2188 games)
+   If most of the search went into the best move (alternatives refuted easily) it moves sooner; if the choice
+   was close it thinks longer.
+4. UseAspFH 1 - aspiration fail-high re-search one ply shallower.         +11.3 (+4..+18) Elo (SPRT accepted, 3549 games)
+5. UseDeeper 1 - late-move re-search one ply deeper / shallower.          +12.5 (+5..+20) Elo (SPRT accepted, 3533 games)
+
+Measured: 1+2+3 together vs D: +49.2 +-13.9 Elo at 6+0.06 (SPRT accepted); at 40+0.4 +51 after the first
+177 games (still running). 4 and 5 were bundled before their tests ended; both have since been accepted.
+Checks of E vs E1 (1+2+3 only) and an 8-thread E vs D match are running. If one of them turns out negative,
+set its option to 0 in config.yml; no new exe is needed.
+
+Tried since D and NOT included (neutral or negative): uncertainty head for pruning (-9..-44), other output-bucket
+schemes (no change), flag mode against low-on-time opponents (-2), ttPv, capture futility, RFP blending,
+LMR on TT capture, 4-ply continuation history, history pruning, pawn history, prior-move bonus (all -1..+4).

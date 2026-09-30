@@ -1,0 +1,154 @@
+What is inside your engine (bundle E) - 2026-09-28
+==================================================
+A UCI chess engine: C++17, one exe, AVX2. Evaluation = NNUE neural net; search = alpha-beta with the
+usual modern pruning. Everything marked [switch] is a UCI option that was tested on its own by SPRT
+and is ON in config_engine_block.yml.
+
+
+1. BOARD AND MOVE GENERATION
+----------------------------
+- Bitboards (one 64-bit mask per piece type and colour).
+- Sliding attacks through PEXT tables (BMI2 instruction; magic numbers as a fallback build).
+- Legal-move filtering, full rules: castling, en passant, promotion, check evasions.
+- Zobrist hashing (position key), repetition detection, 50-move rule.
+- Verified with perft (separate perft.exe test program).
+
+
+2. EVALUATION: THE NET (C1.nnue)
+--------------------------------
+Shape:
+   input features (2 x 5632, sparse) -> 2 x 512 accumulator -> pairwise product -> 512
+   -> 8 neurons (one of 8 sets, picked by piece count) -> [x, x^2] = 16 -> 1 output (centipawns)
+
+- Two viewpoints. The side to move and the opponent each get their own 512-number accumulator,
+  computed from their own point of view. Black's board is flipped so both "play up the board".
+- Features ("HalfKAv2_hm" style, king buckets):
+    * input = (own king bucket, piece type + colour, square), 11 planes x 64 squares x 8 buckets.
+    * Mirroring: if the own king is on files e-h, the board is mirrored left-right, so the king is
+      always on a-d. Half the patterns to learn.
+    * King buckets: 8 = files a-d x {back rank, advanced}. Each bucket has its own copy of the weights.
+    * Both kings are inputs (the old HalfKP net could not see the enemy king).
+- Pairwise activation: each accumulator is clipped to [0,1], split into halves, and the halves are
+  multiplied element-wise (a[i] * a[i+256]). Gives "A and B" interactions and halves the next layer.
+- Output buckets: 8 separate small heads, chosen by the number of pieces on the board
+  (opening / middlegame / endgame get their own weights).
+- Head activation "dual": each hidden neuron gives both clip(x) and clip(x)^2.
+- Integer inference: int16 accumulator weights, int8 hidden-layer weights (per-row scale),
+  AVX2 SIMD (32 lanes of int16 at once).
+- Near the 50-move limit the eval is scaled towards 0: eval * (200 - halfmove clock) / 200.
+
+Speed tricks for the net:
+- Incremental accumulator: a move only adds/subtracts the 2-4 changed features, not a full recompute.
+- [switch UseFinny] Refresh cache ("Finny table"): when the king changes bucket or side, rebuild from a
+  cached accumulator of that bucket plus the difference to its stored board, not from scratch.
+- [switch UseLazyAcc] Lazy updates: the accumulator is only brought up to date when a position is
+  actually evaluated (many searched positions are cut off before that).
+  Both: same results, +7% nodes/sec, +15 Elo.
+
+Training (on the cluster, not in the bundle):
+- Data: 456M positions from Lichess games with Stockfish evals (Aug 2026: 100M, July 2026: 356M).
+- Target: Stockfish eval squashed through tanh; loss = squared error.
+- Two stages: (1) train features under a wider head (16->32), 20 epochs, cosine learning-rate
+  schedule; (2) swap in the small fast head, fit it on the frozen features, 1 short fine-tune epoch.
+- Validation error (lower = better): original 256 net -> acc512 -> t25p 0.0501 -> C1 0.0392.
+
+
+3. SEARCH
+---------
+Framework:
+- Iterative deepening: depth 1, 2, 3, ... until time runs out; the best move so far is always ready.
+- Aspiration windows around the previous score (AspDelta), widened on fail.
+  [switch UseAspFH] (NEW in E) after a fail high the re-search is one ply shallower (cumulative).   +11 Elo
+- Principal Variation Search (negamax alpha-beta): first move full window, others a null window
+  with a re-search if they beat alpha.
+- Quiescence search at the leaves: captures (all moves when in check) until the position is quiet.
+  Stand-pat, delta/futility pruning (QsFut), and captures that lose material by SEE are skipped.
+- Transposition table: 64-byte clusters of 4 entries, lock-free between threads (key XOR data check),
+  depth/age replacement. Stores best move, score, bound, depth and the static eval.
+- Mate-distance scoring, draw by repetition / 50-move rule, MultiPV support.
+- Multi-threading (Lazy SMP): all threads search the same position and share the TT; helper threads
+  skip some depths so they explore different trees. (Threads option; the bot uses 8.)
+
+Move ordering (search the best move first -> more cutoffs -> deeper search):
+  1. TT move (best move stored from an earlier search of this position)
+  2. Good captures: MVV-LVA (most valuable victim, least valuable attacker), checked by SEE
+  3. Killer moves (2 per ply: quiet moves that caused a cutoff at this depth before)
+  4. Counter move (the move that last refuted the opponent's previous move)
+  5. Quiet moves by history score:
+     - butterfly history (from-square x to-square, per side)
+     - [switch UseContHist] continuation history: how good this move was after the previous
+       1 and 2 moves (piece + square pairs).                                      +26 Elo
+  6. Bad captures (SEE loses material) last
+  - [switch UseCaptHist] capture history: learned score for (piece, target square, captured piece)
+    added to capture ordering.                                                     +8 Elo
+
+Pruning (skip moves/nodes that almost certainly don't matter):
+- Reverse futility pruning: static eval far above beta at low depth -> return (RfpDepth/RfpMargin/RfpImp).
+- Null-move pruning: let the opponent move twice; if we still beat beta, cut (NmpBase/NmpDiv/NmpEvalDiv).
+- Late move pruning: at low depth, stop trying quiet moves after enough have failed (LmpBase).
+- Futility pruning: quiet moves that can't raise the score to alpha (FutBase/FutMul).
+- SEE pruning: skip quiet moves / captures that lose too much material (SeeQuiet/SeeNoisy).
+- Internal iterative reduction: no TT move at depth >= 4 -> search one ply less.
+- "improving" flag: prune more when the side's eval is getting worse than 2 plies ago.
+
+Static eval correction:
+- [switch UseCorr2] (NEW in E) correction history: three tables (pawn structure, white non-pawn pieces, black
+  non-pawn pieces) keep a running average of (search result - static eval); the static eval used for pruning is
+  corrected by it. Not learned from tablebase scores.                               +24 Elo
+
+Reductions / extensions:
+- Late move reductions (LMR): later moves searched shallower, by log(depth) x log(move number)
+  (LmrBase/LmrDiv), less for killers, checks, captures, PV nodes, good history (HistDiv);
+  more for cut nodes and non-improving positions. Re-searched at full depth if they surprise.
+- Check extension: moves that give check are searched one ply deeper.
+- [switch UseDeeper] (NEW in E) when a reduced search surprises and is re-searched, the re-search goes one ply
+  deeper if the move looks much better than the best so far, one ply shallower if only barely.   +12 Elo
+- [switch UseSingular] Singular extensions (NEW in D): if the TT move is much better than all others
+  (a reduced search excluding it fails below ttScore - SingMargin x depth), extend it by one ply.
+  Multicut: if even the others beat beta, cut at once. Negative extension when the TT move isn't
+  singular but the TT score beats beta.                                          +22 Elo
+- [switch UseDblExt] (NEW in E) double extension: if the TT move is singular by a wide margin, extend it by two
+  plies (non-PV nodes, at most 6 per line).                                        +21 Elo
+
+Search constants: the numbers above (RfpMargin, LmrBase, ...) are UCI options. Bundle D uses values
+tuned by SPSA (800 iterations x 22 games at 6+0.06).
+
+
+4. TIME, PONDERING, BOOK, TABLEBASES
+------------------------------------
+- [switch UseTM] Time management:                                                +55 Elo
+    soft limit = remaining/30 + 75% of increment: no new iteration after it;
+    hard limit = 4 x soft (never more than remaining - 50 ms): abort;
+    the soft limit is stretched while the best move keeps changing and shortened when it is stable.
+  [switch UseNodeTM] (NEW in E) and scaled by (1.5 - share of root nodes spent on the best move) x 1.35:
+    clear best move -> earlier move, close choice -> more time.                    +15 Elo
+  lichess-bot additionally keeps a 2 s move_overhead for network lag.
+- Pondering (ponder: true in config): thinks on the opponent's time about the expected reply.
+  On ponderhit the clock counts from the start of pondering, so it answers fast.  +107 Elo
+- [switch UseBook] Own opening book (book_jul2200.bin, Polyglot format): 55k positions from July 2026
+  Lichess games of 2200+ players, weighted-random choice, first 20 plies (10 moves each).  +21 Elo
+- Endgame tablebases: the engine can probe Syzygy 3-4-5 files inside its search (SyzygyPath, +9 Elo),
+  but the bundle skips the 1 GB of files; lichess-bot's online_egtb (Lichess server, up to 7 pieces)
+  plays perfect endgame moves instead, only at the actual game position.
+
+
+5. HOW EVERYTHING WAS TESTED
+----------------------------
+- Each idea = UCI switch, default off. Off = identical to the old engine (checked by bench node counts).
+- Net check: engine eval == PyTorch eval, incremental accumulator == full recompute.
+- Elo: SPRT with fastchess, engine vs itself with one switch changed, 6s+0.06s, 1 thread,
+  8moves_v3 openings with colours swapped, stop at H1 (Elo >= 8, accept) or H0 (Elo <= 0, reject).
+- Confirmation: everything combined vs t25p: +354 Elo at 6+0.06, +254 Elo at 40+0.4 (bundle C1 level).
+- D vs C1: +26 Elo (6+0.06), +23 Elo (40+0.4), both SPRT accepted.
+- E (UseCorr2 + UseDblExt + UseNodeTM) vs D: +49 Elo at 6+0.06, SPRT accepted; 40+0.4 running.
+
+
+6. TRIED AND LEFT OUT
+---------------------
+Since D: uncertainty (sigma) head for pruning, output-bucket schemes, flag mode, ttPv, capture futility, RFP
+blending, LMR on TT capture, 4-ply continuation history, history pruning, pawn history, prior-move bonus.
+Net: threat features (-28, 25% slower), widths 256/384/768/1024, pruning a 1024 net, distillation,
+PSQT shortcut, int8 feature weights, loss power 2.5, EMA weights, hard-example sampling,
+phase-balanced sampling, 16-neuron head (0), 80 epochs (+3, not worth it).
+Search: correction history (-48 even after a bug fix), razoring (+2), ProbCut (+2).
+Built but not Elo-tested: two-net scheme (small 128-wide net for lopsided positions).
