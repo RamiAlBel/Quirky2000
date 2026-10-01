@@ -191,7 +191,7 @@ Baseline error profile (sf held-out 1M, MSE tanh(cp/400)): all 0.04136; by piece
 ## Speed (2026-10-02, on version G; details in deploy/G/README.md)
 | id | idea | result | decision |
 |---|---|---|---|
-| PGO | LLVM clang profile-guided build (engine/build_pgo_win.sh) | +18% nps 1 thread, +23% 4 threads; bench unchanged (378755) | **ACCEPT** (quirky_G_pgo.exe, live on the bot) |
+| PGO | LLVM clang profile-guided build (engine/build_pgo_win.sh) | +18% nps 1 thread, +23% 4 threads; bench unchanged (378755) | **ACCEPT** (deploy/G/quirky_G.exe, live on the bot) |
 | TT prefetch | prefetch the child's TT cluster after do_move / do_null | +1-2% alone, +3% on top of PGO; bench unchanged | **ACCEPT** |
 | sparse L1 | skip all-zero groups of 4 L1 inputs (-DSPARSE_L1) | 85% of groups non-zero with W512_sf; eval 125 vs 92 ns | REJECT (needs a sparsity-trained net) |
 | speed odds | G vs G, 2x clock at 10+0.1 | +147 Elo (70.0%, 90 g, stopped early) | speed is worth a lot at blitz |

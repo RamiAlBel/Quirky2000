@@ -7,7 +7,7 @@ Nothing else changed from E.
 
 | file | what |
 |---|---|
-| `quirky_G.exe` | the engine, Windows x64, needs an AVX2 + BMI2 CPU. Cross-compiled on Linux with zig from `engine/` in this repo |
+| `quirky_G.exe` | the engine, Windows x64, needs an AVX2 + BMI2 CPU. Since 2026-10-02 the faster PGO build (see below), built on Windows with LLVM clang by `engine/build_pgo_win.sh` from `engine/` in this repo |
 | `W512_sf.nnue` | the net (same file as `weights/W512_sf.nnue`) |
 | `config_engine_block.yml` | the lichess-bot `engine:` settings for G |
 
@@ -98,10 +98,10 @@ Lichess opponents the gain may be different.
 
 F vs E (the net change alone) at PC-equivalent blitz/rapid: `experiments/results/README.md`.
 
-## Faster build: `quirky_G_pgo.exe` (2026-10-02)
+## Faster build since 2026-10-02 (`quirky_G.exe` is now this build)
 
-Same engine, same options, same net, same book as `quirky_G.exe`, only faster. It is a drop-in replacement: in
-`config.yml` set `name: "quirky_G_pgo.exe"` and keep everything else. **The bot runs this build since 2026-10-02.**
+`quirky_G.exe` was replaced by a faster build of the same engine: same options, same net, same book, nothing to
+change in `config.yml`. **The bot runs this build since 2026-10-02.** The first G exe (cross-compiled with zig) is in git history.
 The bench check above prints the same `bench: 378755 nodes` (the search is identical; only nps changes).
 
 What changed:
@@ -119,7 +119,7 @@ or `go depth 20` (4 threads); 1-thread node counts identical in every build:
 | plain clang build (same source as `quirky_G.exe`) | 1.23M nps | 3.76M nps |
 | + TT prefetch | +1% | +2% |
 | PGO | +18% | +23% |
-| **PGO + TT prefetch (`quirky_G_pgo.exe`)** | **+21%** | **+27%** |
+| **PGO + TT prefetch (`quirky_G.exe` now)** | **+21%** | **+27%** |
 
 Cache misses on the hash table turned out to be a small cost: the prefetch only adds 1-3%. The gain is PGO.
 
