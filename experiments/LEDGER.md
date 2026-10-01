@@ -187,3 +187,11 @@ Baseline error profile (sf held-out 1M, MSE tanh(cp/400)): all 0.04136; by piece
 | Book round robin stage 2 (top 6, stopped by user 21:58) | 2442 games, anchor nobook: cerebellum +63 [+48,+79] P(best) 70%, optimus32 +57 [+41,+72] 26%, m11_2 +49 [+33,+65] 4%, own_jul2200 +5, nobook 0, sf211 -3. Cerebellum head-to-head: vs optimus32 +21 =110 -30 (lost, ~-19 Elo, 161 g), vs m11_2 +29 =121 -14, vs own_jul2200 +39 =114 -10, vs nobook +39 =120 -8, vs sf211 +36 =120 -6 | | **user decision: Cerebellum = best book** (BookBest=1, BookDepth=255) |
 | cereb_vs_none_8mv SPRT (stopped by user) | 8moves_v3 openings, 6+0.06 | Elo +12.6 +/- 9.1 (1600 g, LLR 0.85 last printed), not finished | cancelled |
 | **Round G closed (user, 2026-09-30 22:05)** | cancelled the last jobs: X_endsw SPRT (endgame expert, +2.05 +/- 3.39 at LLR 0.69, no verdict), ph3f/colf stage 2 with the clip fix (ph2f with the fix: 0.04015 vs ctl 0.04027, within noise) | | **REJECT all: no gain** |
+
+## Speed (2026-10-02, on version G; details in deploy/G/README.md)
+| id | idea | result | decision |
+|---|---|---|---|
+| PGO | LLVM clang profile-guided build (engine/build_pgo_win.sh) | +18% nps 1 thread, +23% 4 threads; bench unchanged (378755) | **ACCEPT** (quirky_G_pgo.exe, live on the bot) |
+| TT prefetch | prefetch the child's TT cluster after do_move / do_null | +1-2% alone, +3% on top of PGO; bench unchanged | **ACCEPT** |
+| sparse L1 | skip all-zero groups of 4 L1 inputs (-DSPARSE_L1) | 85% of groups non-zero with W512_sf; eval 125 vs 92 ns | REJECT (needs a sparsity-trained net) |
+| speed odds | G vs G, 2x clock at 10+0.1 | +147 Elo (70.0%, 90 g, stopped early) | speed is worth a lot at blitz |

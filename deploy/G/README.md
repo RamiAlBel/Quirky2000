@@ -97,3 +97,49 @@ Cerebellum vs our old book (the one E used) **+102 +-15 Elo** (SPRT), Cerebellum
 Lichess opponents the gain may be different.
 
 F vs E (the net change alone) at PC-equivalent blitz/rapid: `experiments/results/README.md`.
+
+## Faster build: `quirky_G_pgo.exe` (2026-10-02)
+
+Same engine, same options, same net, same book as `quirky_G.exe`, only faster. It is a drop-in replacement: in
+`config.yml` set `name: "quirky_G_pgo.exe"` and keep everything else. **The bot runs this build since 2026-10-02.**
+The bench check above prints the same `bench: 378755 nodes` (the search is identical; only nps changes).
+
+What changed:
+- **PGO** (profile-guided optimisation, LLVM clang): the compiler is given a profile of a real search and lays out the
+  code for it. No change to the search. Build: `engine/build_pgo_win.sh` (Git Bash, LLVM in `C:\Program Files\LLVM`).
+- **TT prefetch** (`engine/search.cpp`): right after a move (or null move) is made, the child's hash-table cluster is
+  prefetched, so the probe at the start of the child node waits less on memory. No change to the search
+  (`-DNO_TT_PREFETCH` turns it off).
+
+Speed, Ryzen 7 5800X, version G options, 6 positions that were not in the PGO training run, `go depth 17` (1 thread)
+or `go depth 20` (4 threads); 1-thread node counts identical in every build:
+
+| build | 1 thread, 512 MB hash | 4 threads, 4 GB hash |
+|---|---|---|
+| plain clang build (same source as `quirky_G.exe`) | 1.23M nps | 3.76M nps |
+| + TT prefetch | +1% | +2% |
+| PGO | +18% | +23% |
+| **PGO + TT prefetch (`quirky_G_pgo.exe`)** | **+21%** | **+27%** |
+
+Cache misses on the hash table turned out to be a small cost: the prefetch only adds 1-3%. The gain is PGO.
+
+### Is speed worth Elo? Speed-odds match (stopped early)
+
+Quirky G against itself at 10+0.1, 1 thread each, 64 MB hash, no book; random 6-ply openings within +-80 cp, each
+played with both colours. The "fast" side gets 2x the clock and increment, which is what a 2x faster engine would get.
+
+| fast side gets | games | score | Elo of the fast side |
+|---|---|---|---|
+| 2x time | 90 | 70.0% | **+147** (roughly +80 .. +230) |
+
+Stopped by request after 90 games, so the error bar is wide; a 1.25x run (about what PGO gives) was planned but not
+played. Taken at face value, speed is worth a lot for Quirky at blitz: if Elo scales with log(speed), +21-27% speed is
+about +40-50 Elo in self-play. That is an estimate from the 2x result, not a measurement.
+
+### Tried and rejected: skipping zero inputs in the first layer
+
+Stockfish-style sparse L1 (only multiply the groups of 4 L1 inputs that are not all zero; `-DSPARSE_L1`, off by
+default, bit-identical results). With `W512_sf` 40% of the L1 input bytes are non-zero, but 85% of the 4-byte groups
+contain a non-zero byte, so almost nothing is skipped: the sparse eval took 125 ns vs 92 ns dense, -5 to -10% nps.
+Reordering neurons by activity would only bring the groups to about 78% (estimate). It would need a net trained
+for sparse activations. `-DL1_STATS` prints the sparsity and writes per-neuron activity to `l1_idx.txt`.

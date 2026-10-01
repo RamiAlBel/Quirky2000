@@ -11,6 +11,10 @@ constexpr int MAX_H1 = 32, MAX_H2 = 64, MAX_NB = 8, MAX_L1IN = 2 * NNUE_ACC;
 static int H1, H1p, H2, NB, FtAct, HidAct, L1In, Mult;  // H1p = H1 rounded up to 8 (float part is padded)
 static float CpScale;
 alignas(64) static int8_t L1W[MAX_NB][MAX_H1][MAX_L1IN];
+// sparse-L1 layout of the same weights: [bucket][input group of 4][H1p outputs][4 bytes], so one non-zero
+// group of 4 inputs times one 32-byte load covers 8 outputs (Stockfish-style "skip the zero inputs")
+alignas(64) static int8_t L1WS[MAX_NB * (MAX_L1IN / 4) * MAX_H1 * 4];
+alignas(16) static uint16_t NzLut[256][8];  // bit mask -> positions of its set bits
 static std::vector<float> L1Wf;                          // float reference [nb][h1][l1in]
 static float L1Deq[MAX_NB][MAX_H1], L1B[MAX_NB][MAX_H1];
 alignas(32) static float L2WT[MAX_NB][2 * MAX_H1][MAX_H2];  // transposed: [input][output]
@@ -116,6 +120,14 @@ bool load(const std::string& path) {
         for (int i = 0; i < outIn; i++) OutW[b][h2 ? i : pad(i)] = ow[b * outIn + i];
         OutB[b] = ob[b];
     }
+    memset(L1WS, 0, sizeof(L1WS));
+    for (int b = 0; b < nb; b++)
+        for (int o = 0; o < h1; o++)
+            for (int i = 0; i < l1in; i++)
+                L1WS[(((size_t)b * (l1in / 4) + i / 4) * H1p + o) * 4 + i % 4] = L1W[b][o][i];
+    for (int m = 0; m < 256; m++)
+        for (int k = 0, n = 0; k < 8; k++)
+            if (m >> k & 1) NzLut[m][n++] = (uint16_t)k;
     return true;
 }
 
@@ -183,6 +195,70 @@ static inline void l1_rows(const uint8_t* x, int b, int o0, float* l1out) {
     for (int o = 0; o < N; o++) l1out[o0 + o] = hsum_epi32(sum[o]) * L1Deq[b][o0 + o] + L1B[b][o0 + o];
 }
 
+#ifdef L1_STATS
+static uint64_t StatEvals = 0, StatNz = 0, StatNzB = 0, StatNz2 = 0, StatIdx[MAX_L1IN];
+// printed at exit; l1_idx.txt = fraction of evals in which each L1 input byte is non-zero
+static struct StatPrint {
+    ~StatPrint() {
+        if (!StatEvals) return;
+        fprintf(stderr, "L1 non-zero groups of 4: %.1f of %d (%.1f%%), bytes %.1f%%, pairs %.1f%%\n",
+                (double)StatNz / StatEvals, L1In / 4, 100.0 * StatNz / StatEvals / (L1In / 4),
+                100.0 * StatNzB / StatEvals / L1In, 100.0 * StatNz2 / StatEvals / (L1In / 2));
+        if (FILE* f = fopen("l1_idx.txt", "w")) {
+            for (int i = 0; i < L1In; i++) fprintf(f, "%.5f\n", (double)StatIdx[i] / StatEvals);
+            fclose(f);
+        }
+    }
+} StatPrinter;
+#endif
+
+// -DSPARSE_L1: same result as l1_rows over all H1 outputs (identical maddubs pairs, so identical saturation), but only for the
+// groups of 4 inputs that are not all zero.
+static inline void l1_sparse(const uint8_t* x, int b, float* l1out) {
+    const int G = L1In / 4, K = H1p / 8;
+    const int32_t* x32 = (const int32_t*)x;
+    alignas(16) uint16_t nz[MAX_L1IN / 4 + 8];
+    int n = 0;
+    const __m256i zero = _mm256_setzero_si256();
+    for (int i = 0; i < G; i += 8) {
+        __m256i v = _mm256_load_si256((const __m256i*)(x32 + i));
+        unsigned m = ~_mm256_movemask_ps(_mm256_castsi256_ps(_mm256_cmpeq_epi32(v, zero))) & 0xFF;
+        _mm_storeu_si128((__m128i*)(nz + n), _mm_add_epi16(_mm_set1_epi16((short)i), _mm_load_si128((const __m128i*)NzLut[m])));
+        n += _mm_popcnt_u32(m);
+    }
+#ifdef L1_STATS
+    StatEvals++; StatNz += n;
+    for (int i = 0; i < L1In; i++) StatNzB += x[i] != 0, StatIdx[i] += x[i] != 0;
+    for (int i = 0; i < L1In; i += 2) StatNz2 += (x[i] | x[i + 1]) != 0;
+#endif
+    const __m256i ones = _mm256_set1_epi16(1);
+    __m256i sum[MAX_H1 / 8];
+    for (int k = 0; k < K; k++) sum[k] = zero;
+    const int8_t* W = L1WS + (size_t)b * G * H1p * 4;
+    if (K == 1) {  // 8 outputs: 4 independent sums, one 32-byte weight load per non-zero group
+        __m256i s0 = zero, s1 = zero, s2 = zero, s3 = zero;
+        const __m256i* w = (const __m256i*)W;
+        int j = 0;
+        for (; j + 4 <= n; j += 4) {
+            s0 = _mm256_add_epi32(s0, _mm256_madd_epi16(_mm256_maddubs_epi16(_mm256_set1_epi32(x32[nz[j]]), _mm256_load_si256(w + nz[j])), ones));
+            s1 = _mm256_add_epi32(s1, _mm256_madd_epi16(_mm256_maddubs_epi16(_mm256_set1_epi32(x32[nz[j + 1]]), _mm256_load_si256(w + nz[j + 1])), ones));
+            s2 = _mm256_add_epi32(s2, _mm256_madd_epi16(_mm256_maddubs_epi16(_mm256_set1_epi32(x32[nz[j + 2]]), _mm256_load_si256(w + nz[j + 2])), ones));
+            s3 = _mm256_add_epi32(s3, _mm256_madd_epi16(_mm256_maddubs_epi16(_mm256_set1_epi32(x32[nz[j + 3]]), _mm256_load_si256(w + nz[j + 3])), ones));
+        }
+        for (; j < n; j++)
+            s0 = _mm256_add_epi32(s0, _mm256_madd_epi16(_mm256_maddubs_epi16(_mm256_set1_epi32(x32[nz[j]]), _mm256_load_si256(w + nz[j])), ones));
+        sum[0] = _mm256_add_epi32(_mm256_add_epi32(s0, s1), _mm256_add_epi32(s2, s3));
+    } else for (int j = 0; j < n; j++) {
+        const __m256i xv = _mm256_set1_epi32(x32[nz[j]]);
+        const __m256i* w = (const __m256i*)(W + (size_t)nz[j] * H1p * 4);
+        for (int k = 0; k < K; k++)
+            sum[k] = _mm256_add_epi32(sum[k], _mm256_madd_epi16(_mm256_maddubs_epi16(xv, _mm256_load_si256(w + k)), ones));
+    }
+    alignas(32) int32_t s[MAX_H1];
+    for (int k = 0; k < K; k++) _mm256_store_si256((__m256i*)(s + 8 * k), sum[k]);
+    for (int o = 0; o < H1; o++) l1out[o] = s[o] * L1Deq[b][o] + L1B[b][o];
+}
+
 // L1 input: requantized FT activations of both perspectives (stm first), L1In uint8 values
 static void build_x(const Accumulator& acc, int stm, uint8_t* x) {
     const __m256i zero = _mm256_setzero_si256(), cap = _mm256_set1_epi8(127);
@@ -216,9 +292,13 @@ double evaluate_quant_raw(const Accumulator& acc, int stm, int pieces) {
     build_x(acc, stm, x);
     const int b = bucket(pieces);
     alignas(32) float l1out[MAX_H1] = {};
+#ifndef SPARSE_L1
     int o0 = 0;
     for (; o0 + 8 <= H1; o0 += 8) l1_rows<8>(x, b, o0, l1out);
     if (o0 < H1) l1_rows<4>(x, b, o0, l1out);
+#else
+    l1_sparse(x, b, l1out);
+#endif
     return tail(l1out, b) + psqt_term(acc, stm, b);
 }
 
