@@ -74,10 +74,47 @@ setoption name UsePawnHist value 1
 setoption name UseHindsight value 1
 setoption name UseTtBlend value 1
 setoption name UseQsBlend value 1
+setoption name RfpDepth value 8
+setoption name RfpMargin value 61
+setoption name RfpImp value 30
+setoption name NmpBase value 4
+setoption name NmpDiv value 2
+setoption name NmpEvalDiv value 199
+setoption name LmpBase value 6
+setoption name FutBase value 98
+setoption name FutMul value 122
+setoption name SeeQuiet value 24
+setoption name SeeNoisy value 93
+setoption name HistDiv value 5912
+setoption name LmrBase value 86
+setoption name LmrDiv value 197
+setoption name AspDelta value 20
+setoption name QsFut value 209
+setoption name SingMargin value 3
+setoption name DblMargin value 21
+setoption name DeeperMargin value 41
+setoption name Corr2W value 273
+setoption name Corr2P value 94
+setoption name Corr2N value 55
+setoption name Cont1W value 99
+setoption name Cont2W value 104
+setoption name Cont4W value 53
+setoption name Cont6W value 51
+setoption name PawnHistW value 103
+setoption name HsRed value 3
+setoption name HsWorsen value 1
+setoption name HsMargin value 207
 bench 13
 ```
 
-It must print `bench: 320326 nodes`. Then do the book check from `deploy/G/README.md`.
+It must print `bench: 299909 nodes`. Then do the book check from `deploy/G/README.md`.
+
+## H1: re-tuned search constants
+
+The search constants were re-tuned by SPSA for this net with all H switches on: two independent runs of
+600 iterations (26,400 games each, 4+0.04), averaged. Main changes: RfpMargin 81 -> 61, RfpDepth 9 -> 8, RfpImp 24 -> 30,
+NmpBase 3 -> 4, NmpDiv 3 -> 2, LmpBase 4 -> 6, FutMul 114 -> 122, AspDelta 17 -> 20. The new-feature weights hardly moved.
+Check, H1 vs H: +58.6 +- 17.9 Elo vs H at 5+0.05, 850 games, SPRT [0,5] passed.
 
 ## Flag mode (games without increment)
 

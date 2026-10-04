@@ -1,4 +1,4 @@
-# Version H (provisional): replace the matching keys of the "engine:" block in lichess-bot/config.yml with these.
+# Version H1 (H + SPSA-tuned constants): replace the matching keys of the "engine:" block in lichess-bot/config.yml with these.
 # Change the two folder paths to wherever you put this folder (forward slashes, keep the trailing /).
 # Keep a backup of your old config.yml.
 engine:
@@ -29,19 +29,37 @@ engine:
     UseNodeTM: 1                   # time by node share of the best move (+15)
     UseAspFH: 1                    # aspiration fail-high re-search 1 ply shallower (+11)
     UseDeeper: 1                   # LMR re-search deeper/shallower (+12)
-    # --- SPSA-tuned search constants (same as E) ---
-    RfpMargin: 81
-    RfpImp: 24
-    NmpEvalDiv: 196
-    LmpBase: 4
-    FutBase: 99
-    FutMul: 114
-    SeeQuiet: 26
-    SeeNoisy: 99
-    HistDiv: 5715
-    LmrBase: 85
-    LmrDiv: 206
-    AspDelta: 17
+    # --- H1: search constants re-tuned by SPSA for the Leela net + H switches (2 x 26k games, 4+0.04) ---
+    # +58.6 +- 17.9 Elo vs H at 5+0.05, 850 games, SPRT [0,5] passed
+    RfpDepth:     8  # new
+    RfpMargin:    61  # was 81
+    RfpImp:       30  # was 24
+    NmpBase:      4  # new
+    NmpDiv:       2  # new
+    NmpEvalDiv:   199  # was 196
+    LmpBase:      6  # was 4
+    FutBase:      98  # was 99
+    FutMul:       122  # was 114
+    SeeQuiet:     24  # was 26
+    SeeNoisy:     93  # was 99
+    HistDiv:      5912  # was 5715
+    LmrBase:      86  # was 85
+    LmrDiv:       197  # was 206
+    AspDelta:     20  # was 17
+    QsFut:        209  # new
+    DblMargin:    21  # new
+    DeeperMargin: 41  # new
+    Corr2W:       273  # new
+    Corr2P:       94  # new
+    Corr2N:       55  # new
+    Cont1W:       99  # new
+    Cont2W:       104  # new
+    Cont4W:       53  # new
+    Cont6W:       51  # new
+    PawnHistW:    103  # new
+    HsRed:        3  # new
+    HsWorsen:     1  # new
+    HsMargin:     207  # new
     # --- NEW in H, provisional: each one positive in a rough test on this net (about 210 games each, +-30 Elo,
     #     so none is proven yet). Their combination has not been tested. Set any of them to 0 to switch it off. ---
     UseThreatHist: 1               # history indexed by whether from/to squares are attacked (+17 here, +4.7 on W512_sf)
