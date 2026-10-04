@@ -46,7 +46,7 @@ go movetime 1000
 | F | E's options with the sf-trained 512 net `weights/W512_sf.nnue` | `F_opts.txt` |
 | **G (current)** | F + the Cerebellum opening book (`UseBook=1 BookBest=1 BookDepth=255`), +102 vs E's book | `G_opts.txt` |
 | H-lc0T (testing) | G's search with the Leela-trained threat net `weights/L1024T_lc0.nnue` (+34 +/- 17 vs G at 8+0.08); build `ACC=1024 EXTRA=-DNNUE_LNN6 engine/build.sh quirky_h`. See `experiments/07-round-h.md` | `H_lc0T_opts.txt` |
-| H (provisional) | H-lc0T + `UseThreatHist` + `UseCuckoo` (both accepted on G; re-test on the Leela net running). Windows bundle: `deploy/H` (exe, net, lichess-bot config), bench 13 = 339009 | `H_opts.txt` |
+| H (provisional) | H-lc0T + `UseThreatHist UseCuckoo UseCont6 UsePawnHist UseHindsight UseTtBlend UseQsBlend` (each positive in a rough 1-at-a-time test on the Leela net, about +-30 Elo; stack not yet tested). Windows bundle: `deploy/H` (exe, net, lichess-bot config), bench 13 = 320326 | `H_opts.txt` |
 
 Option files are in `experiments/options/`. `EvalFile`/`SyzygyPath` there are cluster paths.
 Bench (depth 13) with E's options: 574,687 nodes with `assets/C1.nnue`, 378,755 with `weights/W512_sf.nnue` (F, G).

@@ -42,9 +42,15 @@ engine:
     LmrBase: 85
     LmrDiv: 206
     AspDelta: 17
-    # --- NEW in H, provisional: accepted on W512_sf, re-test on this net is running ---
-    UseThreatHist: 1               # history indexed by whether from/to squares are attacked (+4.7 on W512_sf)
-    UseCuckoo: 1                   # upcoming-repetition detection (+3.9 on W512_sf)
+    # --- NEW in H, provisional: each one positive in a rough test on this net (about 210 games each, +-30 Elo,
+    #     so none is proven yet). Their combination has not been tested. Set any of them to 0 to switch it off. ---
+    UseThreatHist: 1               # history indexed by whether from/to squares are attacked (+17 here, +4.7 on W512_sf)
+    UseCuckoo: 1                   # upcoming-repetition detection (+33 here, +3.9 on W512_sf)
+    UseCont6: 1                    # continuation history also at plies 4 and 6 (+15)
+    UsePawnHist: 1                 # history indexed by the pawn structure (+22)
+    UseHindsight: 1                # depth adjustment from the parent's reduction and eval trend (+8)
+    UseTtBlend: 1                  # TT cutoff returns a blend of TT score and beta (+20, tested together with QsBlend)
+    UseQsBlend: 1                  # same blend for quiescence fail-highs
 
 # Unchanged from E (keep what you have in config.yml):
 # - online tablebases, under engine: -> online_moves: -> online_egtb:
