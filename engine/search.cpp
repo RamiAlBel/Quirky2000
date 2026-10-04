@@ -165,6 +165,14 @@ static inline Cluster& tt_cluster(uint64_t key) { return ttTable[__umulh(key, tt
 static inline Cluster& tt_cluster(uint64_t key) { return ttTable[(uint64_t)(((unsigned __int128)key * ttClusters) >> 64)]; }
 #endif
 
+// start loading the child's TT cluster into cache right after the move is made, so the probe at the start of the
+// child node does not stall on a cache miss (-DNO_TT_PREFETCH turns it off for A/B tests)
+static inline void tt_prefetch(uint64_t key) {
+#ifndef NO_TT_PREFETCH
+    _mm_prefetch((const char*)&tt_cluster(key), _MM_HINT_T0);
+#endif
+}
+
 static bool tt_probe(uint64_t key, TTData& out) {
     Cluster& c = tt_cluster(key);
     for (auto& e : c.e) {
@@ -675,6 +683,7 @@ static inline void make_child(Worker& w, int ply, Move m) {
     Position& child = w.pos[ply + 1];
     child = w.pos[ply];
     child.do_move(m);
+    tt_prefetch(child.key);
     if (UseLazyAcc) w.accOk[ply + 1] = false;
     else nnue::update(w.pos[ply], m, child, w.acc[ply], w.acc[ply + 1]), w.accOk[ply + 1] = true;
     w.accSOk[ply + 1] = false;
@@ -858,6 +867,7 @@ static int negamax(Worker& w, int alpha, int beta, int depth, int ply, bool cutN
             Position& child = w.pos[ply + 1];
             child = pos;
             child.do_null();
+            tt_prefetch(child.key);
             if (UseLazyAcc) w.accOk[ply + 1] = false;
             else w.acc[ply + 1] = w.acc[ply], w.accOk[ply + 1] = true;
             w.accSOk[ply + 1] = false;
