@@ -51,6 +51,16 @@ engine:
     UseHindsight: 1                # depth adjustment from the parent's reduction and eval trend (+8)
     UseTtBlend: 1                  # TT cutoff returns a blend of TT score and beta (+20, tested together with QsBlend)
     UseQsBlend: 1                  # same blend for quiescence fail-highs
+    # --- NEW in H: flag mode, a practical rule for games without increment (1+0, 3+0). NOT tested in games. ---
+    # When neither side has an increment, the opponent has < 30 s and we have >= 1.3x their time, the engine scores
+    # a draw as -50 cp for itself: it avoids threefold repetition (and other draws) unless it is clearly worse,
+    # so the game goes on and the opponent may flag. Prints "info string flag mode ..." when it is on.
+    UseFlag: 1
+    FlagNoInc: 1                   # only in games with 0 increment
+    FlagOppMs: 30000               # opponent below 30 s
+    FlagRatio: 130                 # our clock >= 130% of theirs
+    FlagContempt: 50               # a draw counts as -50 cp for us
+    FlagTimePct: 100               # 100 = do not change our own thinking time (lower = move faster in flag mode)
 
 # Unchanged from E (keep what you have in config.yml):
 # - online tablebases, under engine: -> online_moves: -> online_egtb:

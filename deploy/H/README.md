@@ -79,6 +79,16 @@ bench 13
 
 It must print `bench: 320326 nodes`. Then do the book check from `deploy/G/README.md`.
 
+## Flag mode (games without increment)
+
+A practical rule for 1+0 / 3+0, **not tested in games** (self-play cannot show it: an engine opponent never flags).
+When neither side has an increment, the opponent has less than 30 s and we have at least 1.3x their time, a draw
+counts as -50 cp for us. The engine then avoids threefold repetition and other drawing lines unless it is clearly
+worse (below -50 cp a draw is still welcome), and keeps the game going so the opponent can run out of time.
+With an increment it never switches on. In the lichess-bot log it shows as `info string flag mode: ...`.
+Settings: `UseFlag FlagNoInc FlagOppMs FlagRatio FlagContempt FlagTimePct` in `config_engine_block.yml`;
+set `UseFlag: 0` to turn it off. It does not change the bench.
+
 ## Speed
 
 The net is 2x wider than W512_sf and has threat inputs, so nodes/s is about half of G's. The +34 Elo above already

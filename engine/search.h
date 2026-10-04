@@ -16,6 +16,7 @@ struct Limits {
     bool fromClock = false;  // movetime was derived from wtime/btime (time management may override it)
     int64_t time = -1, inc = 0;
     int64_t oppTime = -1;    // opponent's clock (flag mode)
+    int64_t oppInc = 0;      // opponent's increment (flag mode)
 };
 
 namespace search {

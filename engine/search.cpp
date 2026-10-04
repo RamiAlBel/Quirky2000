@@ -96,6 +96,7 @@ TUNE(FlagOppMs, 20000, 1000, 120000);
 TUNE(FlagRatio, 200, 100, 800);   // our time >= FlagRatio% of theirs
 TUNE(FlagTimePct, 60, 20, 100);   // soft/hard limits scaled by this
 TUNE(FlagContempt, 30, 0, 200);   // draw = -FlagContempt cp for us
+TUNE(FlagNoInc, 0, 0, 1);         // 1: flag mode only when neither side has an increment (1+0, 3+0, ...)
 TUNE(UseSigma, 0, 0, 1);     // RFP and futility margins scaled by the node's predicted eval error
 TUNE(SigRef, 100, 20, 400);  // sigma (cp) at which margins are unchanged
 TUNE(SigMix, 50, 0, 100);    // % of the margin that scales with sigma/SigRef
@@ -1252,8 +1253,10 @@ void start(const Position& root, const std::vector<uint64_t>& history, const Lim
         limits.movetime = hard;
     }
     drawScore = 0;
-    if (UseFlag && lim.fromClock && lim.oppTime >= 0 && lim.oppTime < FlagOppMs && lim.time * 100 >= lim.oppTime * FlagRatio) {
+    if (UseFlag && lim.fromClock && lim.oppTime >= 0 && lim.oppTime < FlagOppMs && lim.time * 100 >= lim.oppTime * FlagRatio
+        && !(FlagNoInc && (lim.inc > 0 || lim.oppInc > 0))) {
         drawScore = FlagContempt;
+        if (!quietOutput) out_line("info string flag mode: draw = -%d cp (clock %lld vs %lld ms)", (int)FlagContempt, (long long)lim.time, (long long)lim.oppTime);
         if (softMs) { softMs = std::max<int64_t>(5, softMs * FlagTimePct / 100); limits.movetime = std::max<int64_t>(10, limits.movetime * FlagTimePct / 100); }
     }
     ttGen = (ttGen + 1) & 63;

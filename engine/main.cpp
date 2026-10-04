@@ -350,6 +350,7 @@ int main(int argc, char** argv) {
                 lim.time = myTime;
                 lim.inc = myInc;
                 lim.oppTime = pos.stm == WHITE ? btime : wtime;
+                lim.oppInc = pos.stm == WHITE ? binc : winc;
             }
             // own book: answer instantly while in book (hist holds one key per position since the start)
             if (UseBook && book::loaded() && (int)hist.size() - 1 < BookDepth && !lim.ponder) {
