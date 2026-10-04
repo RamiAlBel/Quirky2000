@@ -145,7 +145,7 @@ bool Position::is_valid() const {
 void Position::set_fen(const std::string& fen) {
     std::memset(pieces, 0, sizeof(pieces));
     byColor[0] = byColor[1] = occupied = 0;
-    key = 0;
+    key = 0; pawnKey = 0; npKey[0] = npKey[1] = 0;
     for (int i = 0; i < 64; i++) board[i] = NO_PIECE;
     std::istringstream is(fen);
     std::string bpart, stmPart, castlePart, epPart;

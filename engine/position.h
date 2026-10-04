@@ -99,6 +99,7 @@ struct Position {
     Bitboard byColor[2];
     Bitboard occupied;
     uint64_t key;
+    uint64_t pawnKey, npKey[2];  // Zobrist of pawns / of each colour's non-pawns (incl. king), for correction history
     Bitboard checkers, pinned;   // relative to side to move
     uint8_t board[64];
     int stm, castling, ep;       // ep = square or -1 (only set when a capture is actually possible)
@@ -129,11 +130,13 @@ struct Position {
     void put_piece(int p, int s) {
         pieces[p] |= sqbb(s); byColor[color_of(p)] |= sqbb(s); occupied |= sqbb(s);
         board[s] = (uint8_t)p; key ^= zob::Piece[p][s];
+        if (type_of(p) == PAWN) pawnKey ^= zob::Piece[p][s]; else npKey[color_of(p)] ^= zob::Piece[p][s];
     }
     void remove_piece(int s) {
         int p = board[s];
         pieces[p] ^= sqbb(s); byColor[color_of(p)] ^= sqbb(s); occupied ^= sqbb(s);
         board[s] = NO_PIECE; key ^= zob::Piece[p][s];
+        if (type_of(p) == PAWN) pawnKey ^= zob::Piece[p][s]; else npKey[color_of(p)] ^= zob::Piece[p][s];
     }
 
     void compute_check_info();

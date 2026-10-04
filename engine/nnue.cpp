@@ -1,3 +1,6 @@
+#if defined(NNUE_LNN6) && !defined(NNUE_SMALL_TU)
+#include "nnue6.inc"
+#else
 #include "nnue.h"
 #include <cstdio>
 #include <cmath>
@@ -392,3 +395,4 @@ int evaluate(const Accumulator& acc, int stm, int pieces) {
 #endif
 
 }  // namespace NNUE_NS
+#endif  // NNUE_LNN6

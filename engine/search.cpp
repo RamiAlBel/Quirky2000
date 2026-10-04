@@ -3,6 +3,7 @@
 #include "nnue_small.h"
 #include "tune.h"
 #include "tbprobe.h"
+#include <memory>
 #include <atomic>
 #include <thread>
 #include <mutex>
@@ -101,6 +102,29 @@ TUNE(SigMix, 50, 0, 100);    // % of the margin that scales with sigma/SigRef
 TUNE(UseSigLmr, 0, 0, 1);    // reduce more in calm nodes (sigma < SigLo), less in sharp ones (sigma > SigHi)
 TUNE(SigLo, 40, 5, 200);
 TUNE(SigHi, 200, 50, 800);
+// ---- round H (Coda-style search ideas, on top of version G) ----
+TUNE(UseThreatHist, 0, 0, 1); // main history also indexed by "from attacked" x "to attacked" (by the opponent)
+TUNE(UseCont6, 0, 0, 1);      // continuation history at plies 1, 2, 4 and 6
+TUNE(Cont1W, 100, 0, 200);    // % weights of the continuation tables in the quiet score (UseCont6)
+TUNE(Cont2W, 100, 0, 200);
+TUNE(Cont4W, 50, 0, 200);
+TUNE(Cont6W, 50, 0, 200);
+TUNE(PawnHistW, 100, 0, 200); // % weight of pawn history in the quiet score (UsePawnHist, incremental pawn key)
+TUNE(UseCorr5, 0, 0, 1);      // correction history from pawn, white/black non-pawn, continuation and transition keys
+TUNE(C5W, 256, 64, 1024);     // update denominator
+TUNE(C5P, 100, 0, 200);       // % weights of the five tables
+TUNE(C5N, 50, 0, 200);
+TUNE(C5C, 50, 0, 200);
+TUNE(C5T, 50, 0, 200);
+TUNE(UseCuckoo, 0, 0, 1);     // upcoming-repetition detection: raise alpha to the draw score if a cycle is one move away
+TUNE(UseHindsight, 0, 0, 1);  // adjust depth by how the parent's reduced move turned out
+TUNE(HsRed, 3, 1, 6);         // parent reduction >= HsRed and both sides not worsening -> depth + 1
+TUNE(HsWorsen, 2, -50, 50);
+TUNE(HsMargin, 200, 50, 400); // parent reduced and both static evals sum above this -> depth - 1
+TUNE(UseFhBlend, 0, 0, 1);    // non-PV fail high: return (best * depth + beta) / (depth + 1)
+TUNE(UseTtBlend, 0, 0, 1);    // non-PV TT cutoff above beta: same blend with the TT depth
+TUNE(UseQsBlend, 0, 0, 1);    // qsearch fail high: (best + beta) / 2
+TUNE(UseHistNorm, 0, 0, 1);   // LMR: scale the quiet score back to the weight of the G tables (main + 2 cont = 300%)
 
 static std::mutex outMutex;
 static bool quietOutput = false;
@@ -225,6 +249,11 @@ struct Worker {
     bool sigOk[MAX_PLY + 4];
     int16_t phist[1024][12][64];  // [pawn key][piece][to]  // double extensions on the current line
     int16_t cont[12][64][12][64];  // [prev piece][prev to][piece][to]
+    int thist[2][2][2][64][64];    // [stm][from attacked][to attacked][from][to] (UseThreatHist)
+    Bitboard thr[MAX_PLY + 4];     // squares attacked by the side not to move (UseThreatHist)
+    int redIn[MAX_PLY + 4];        // reduction applied to the move that led to this ply (UseHindsight)
+    int16_t c5P[2][16384], c5W[2][16384], c5B[2][16384], c5T[2][16384];  // [stm][key bits] (UseCorr5)
+    int16_t c5C[12][64][12][64];   // [piece][to] two plies back x [piece][to] one ply back
     int capt[12][64][6];           // [piece][to][victim type; 5 = none (promotion)]
     Move excluded[MAX_PLY + 4];
     int staticEval[MAX_PLY + 4];
@@ -415,7 +444,9 @@ static inline void corr2_update(Worker& w, const Position& p, int diff, int dept
     upd(w.corrN[p.stm][BLACK][np_idx(p, BLACK)]);
 }
 // corr holds the average (search result - static eval) of this pawn structure in 1/16 cp
-static inline int corrected(const Worker& w, const Position& p, int raw) {
+static inline int corr5_total(const Worker& cw, const Position& p, int ply);
+static inline int corrected(const Worker& w, const Position& p, int raw, int ply) {
+    if (UseCorr5) return std::clamp(raw + corr5_total(w, p, ply), -MATE_BOUND + 1, MATE_BOUND - 1);
     if (UseCorr2) return std::clamp(raw + corr2_total(w, p), -MATE_BOUND + 1, MATE_BOUND - 1);
     if (!UseCorrHist) return raw;
     return std::clamp(raw + w.corr[p.stm][pawn_idx(p)] / 16, -MATE_BOUND + 1, MATE_BOUND - 1);
@@ -423,20 +454,124 @@ static inline int corrected(const Worker& w, const Position& p, int raw) {
 static inline int cont_idx_ok(const Worker& w, int ply, int back) {
     return ply >= back && w.currentMove[ply - back] && w.movedPiece[ply - back] < 12;
 }
-static inline int phist_idx(const Position& p) { return pawn_idx(p) >> 4; }
+static inline int phist_idx(const Position& p) { return (int)(p.pawnKey >> 54); }  // 10 bits
+// squares attacked by colour c
+static inline Bitboard attacks_by(const Position& p, int c) {
+    constexpr Bitboard FA = 0x0101010101010101ULL, FH = FA << 7;
+    Bitboard pw = p.pcs(c, PAWN), a;
+    a = c == WHITE ? ((pw << 7) & ~FH) | ((pw << 9) & ~FA) : ((pw >> 9) & ~FH) | ((pw >> 7) & ~FA);
+    for (Bitboard b = p.pcs(c, KNIGHT); b;) a |= bb::KnightAttacks[pop_lsb(b)];
+    for (Bitboard b = p.pcs(c, BISHOP) | p.pcs(c, QUEEN); b;) a |= bb::bishop_attacks(pop_lsb(b), p.occupied);
+    for (Bitboard b = p.pcs(c, ROOK) | p.pcs(c, QUEEN); b;) a |= bb::rook_attacks(pop_lsb(b), p.occupied);
+    return a | bb::KingAttacks[p.king_sq(c)];
+}
+// main history entry of a quiet move; thr = squares the opponent attacks (UseThreatHist)
+static inline int& main_hist(Worker& w, int c, Bitboard thr, Move m) {
+    int f = from_sq(m), t = to_sq(m);
+    if (UseThreatHist) return w.thist[c][(thr >> f) & 1][(thr >> t) & 1][f][t];
+    return w.hist[c][f][t];
+}
+static const int contBacks[4] = {1, 2, 4, 6};
+static inline int n_cont() { return UseCont6 ? 4 : 2 + UseCont4; }
+static inline int cont_w(int i) {
+    if (!UseCont6) return 100;
+    return i == 0 ? Cont1W : i == 1 ? Cont2W : i == 2 ? Cont4W : Cont6W;
+}
+static inline int hist_wsum() {  // total % weight of the tables summed in quiet_score
+    int t = 100 + (UsePawnHist ? PawnHistW : 0);
+    if (UseContHist) for (int i = 0; i < n_cont(); i++) t += cont_w(i);
+    return std::max(t, 1);
+}
 static inline int quiet_score(const Worker& w, const Position& pos, int ply, Move m) {
-    int s = w.hist[pos.stm][from_sq(m)][to_sq(m)];
-    if (UsePawnHist) s += w.phist[phist_idx(pos)][pos.board[from_sq(m)]][to_sq(m)];
+    int s = main_hist(const_cast<Worker&>(w), pos.stm, w.thr[ply], m);
+    if (UsePawnHist) s += w.phist[phist_idx(pos)][pos.board[from_sq(m)]][to_sq(m)] * PawnHistW / 100;
     if (UseContHist) {
         int pc = pos.board[from_sq(m)], to = to_sq(m);
-        static const int backs[3] = {1, 2, 4};
-        for (int i = 0; i < 2 + UseCont4; i++) {
-            int back = backs[i];
+        for (int i = 0; i < n_cont(); i++) {
+            int back = contBacks[i];
             if (cont_idx_ok(w, ply, back))
-                s += w.cont[w.movedPiece[ply - back]][to_sq(w.currentMove[ply - back])][pc][to];
+                s += w.cont[w.movedPiece[ply - back]][to_sq(w.currentMove[ply - back])][pc][to] * cont_w(i) / 100;
         }
     }
     return s;
+}
+// ---- correction history v5 ----
+static inline uint32_t key14(uint64_t k) { return (uint32_t)((k * 0x9E3779B97F4A7C15ULL) >> 50); }
+static inline uint64_t trans_key(const Worker& w, int ply) {  // what the last move changed (0 at the game start)
+    int idx = w.gameLen - 1 + ply;
+    return idx >= 1 ? w.keys[idx] ^ w.keys[idx - 1] : 0;
+}
+static inline int16_t* c5_cont(Worker& w, int ply) {
+    if (!cont_idx_ok(w, ply, 1) || !cont_idx_ok(w, ply, 2)) return nullptr;
+    return &w.c5C[w.movedPiece[ply - 2]][to_sq(w.currentMove[ply - 2])][w.movedPiece[ply - 1]][to_sq(w.currentMove[ply - 1])];
+}
+static inline int corr5_total(const Worker& cw, const Position& p, int ply) {
+    Worker& w = const_cast<Worker&>(cw);
+    int c = p.stm;
+    int s = w.c5P[c][key14(p.pawnKey)] * C5P + (w.c5W[c][key14(p.npKey[WHITE])] + w.c5B[c][key14(p.npKey[BLACK])]) * C5N +
+            w.c5T[c][key14(trans_key(w, ply))] * C5T;
+    if (int16_t* e = c5_cont(w, ply)) s += *e * C5C;
+    return s / (16 * 100);
+}
+static inline void corr5_update(Worker& w, const Position& p, int ply, int diff, int depth) {
+    int wt = std::min(depth + 1, 16), t = std::clamp(diff * 16, -8192, 8192), c = p.stm;
+    auto upd = [&](int16_t& e) { e = (int16_t)std::clamp((e * (C5W - wt) + t * wt) / C5W, -4096, 4096); };
+    upd(w.c5P[c][key14(p.pawnKey)]);
+    upd(w.c5W[c][key14(p.npKey[WHITE])]);
+    upd(w.c5B[c][key14(p.npKey[BLACK])]);
+    upd(w.c5T[c][key14(trans_key(w, ply))]);
+    if (int16_t* e = c5_cont(w, ply)) upd(*e);
+}
+// ---- cuckoo tables: Zobrist difference of every reversible (non-pawn) move on an empty board ----
+static uint64_t cuckooKey[8192];
+static Move cuckooMove[8192];
+static inline int ck1(uint64_t k) { return (int)(k & 0x1FFF); }
+static inline int ck2(uint64_t k) { return (int)((k >> 16) & 0x1FFF); }
+static void init_cuckoo() {
+    std::memset(cuckooKey, 0, sizeof(cuckooKey));
+    std::memset(cuckooMove, 0, sizeof(cuckooMove));
+    int count = 0;
+    for (int pc = 0; pc < 12; pc++) {
+        int t = type_of(pc);
+        if (t == PAWN) continue;
+        for (int a = 0; a < 64; a++)
+            for (int b = a + 1; b < 64; b++) {
+                Bitboard att = t == KNIGHT ? bb::KnightAttacks[a] : t == BISHOP ? bb::bishop_attacks(a, 0)
+                             : t == ROOK ? bb::rook_attacks(a, 0) : t == QUEEN ? bb::queen_attacks(a, 0) : bb::KingAttacks[a];
+                if (!(att & sqbb(b))) continue;
+                uint64_t key = zob::Piece[pc][a] ^ zob::Piece[pc][b] ^ zob::Side;
+                Move mv = make_move(a, b, 0);
+                int i = ck1(key);
+                while (true) {  // cuckoo insertion
+                    std::swap(cuckooKey[i], key);
+                    std::swap(cuckooMove[i], mv);
+                    if (!mv) break;
+                    i = i == ck1(key) ? ck2(key) : ck1(key);
+                }
+                count++;
+            }
+    }
+    if (count != 3668) out_line("info string cuckoo table size %d (expected 3668)", count);
+}
+// some legal reversible move of the side to move reaches a position already on the line (any repetition = draw here)
+static bool upcoming_repetition(const Worker& w, int ply) {
+    const Position& p = w.pos[ply];
+    int idx = w.gameLen - 1 + ply;
+    int end = std::min(std::min(p.halfmove, w.pfn[ply]), idx);
+    if (end < 3) return false;
+    for (int i = 3; i <= end; i += 2) {
+        uint64_t mk = p.key ^ w.keys[idx - i];
+        int j = ck1(mk);
+        if (cuckooKey[j] != mk) { j = ck2(mk); if (cuckooKey[j] != mk) continue; }
+        Move mv = cuckooMove[j];
+        int a = from_sq(mv), b = to_sq(mv);
+        if (bb::Between[a][b] & p.occupied) continue;
+        if (ply > i) return true;  // the repeated position is inside the search tree
+        // before the root: the piece must belong to the side to move (otherwise it's the opponent's move)
+        int sq = p.board[a] != NO_PIECE ? a : b;
+        if (p.board[sq] != NO_PIECE && color_of(p.board[sq]) == p.stm) return true;
+    }
+    return false;
 }
 // ---- Syzygy (Fathom) ----
 static constexpr int TB_WIN_V = MATE_BOUND - 1;  // below mate scores, above any eval
@@ -517,7 +652,7 @@ struct Picker {
                 int victim = flags_of(m) == MF_EP ? PAWN : (pos.board[to_sq(m)] != NO_PIECE ? type_of(pos.board[to_sq(m)]) : -1);
                 int mvv = (victim >= 0 ? SeeVal[victim] : 0) + (is_promo(m) && promo_type(m) == QUEEN ? 950 : 0);
                 s = 20000000 + mvv * 16 - type_of(pos.board[from_sq(m)]);
-            } else s = w.hist[us][from_sq(m)][to_sq(m)];
+            } else s = UseThreatHist ? main_hist(const_cast<Worker&>(w), us, attacks_by(pos, us ^ 1), m) : w.hist[us][from_sq(m)][to_sq(m)];
             scores[i] = s;
         }
     }
@@ -548,6 +683,7 @@ static inline void make_child(Worker& w, int ply, Move m) {
     w.keys[w.gameLen + ply] = child.key;
     w.pfn[ply + 1] = w.pfn[ply] + 1;
     w.dext[ply + 1] = w.dext[ply];
+    w.redIn[ply + 1] = 0;
     w.nodes.fetch_add(1, std::memory_order_relaxed);
 }
 
@@ -559,6 +695,10 @@ static int qsearch(Worker& w, int alpha, int beta, int ply) {
     if (w.id == 0 && (++w.tick & 2047) == 0) check_time();
     if (stopFlag.load(std::memory_order_relaxed)) return 0;
     if (is_draw(w, ply)) return draw_value(ply);
+    if (UseCuckoo && alpha < draw_value(ply) && upcoming_repetition(w, ply)) {
+        alpha = draw_value(ply);
+        if (alpha >= beta) return alpha;
+    }
     bool inCheck = pos.checkers != 0;
     if (ply >= MAX_PLY - 1) return inCheck ? 0 : evaluate(w, ply);
 
@@ -572,10 +712,11 @@ static int qsearch(Worker& w, int alpha, int beta, int ply) {
     if (inCheck) bestValue = -VALUE_INF;
     else {
         rawEval = (ttHit && tt.eval != VALUE_NONE) ? tt.eval : evaluate(w, ply);
-        bestValue = corrected(w, pos, rawEval);
+        bestValue = corrected(w, pos, rawEval, ply);
         if (ttHit && ttValue != VALUE_NONE && (tt.bound & (ttValue > bestValue ? BOUND_LOWER : BOUND_UPPER)))
             bestValue = ttValue;
         if (bestValue >= beta) {
+            if (UseQsBlend && std::abs(bestValue) < MATE_BOUND && std::abs(beta) < MATE_BOUND) bestValue = (bestValue + beta) / 2;
             if (!ttHit) tt_store(pos.key, 0, value_to_tt(bestValue, ply), rawEval, 0, BOUND_LOWER);
             return bestValue;
         }
@@ -617,6 +758,8 @@ static int qsearch(Worker& w, int alpha, int beta, int ply) {
         }
     }
     if (inCheck && moveCount == 0) return -VALUE_MATE + ply;
+    if (UseQsBlend && bestValue >= beta && std::abs(bestValue) < MATE_BOUND && std::abs(beta) < MATE_BOUND)
+        bestValue = (bestValue + beta) / 2;
     tt_store(pos.key, bestMove, value_to_tt(bestValue, ply), rawEval, 0, bestValue >= beta ? BOUND_LOWER : BOUND_UPPER);
     return bestValue;
 }
@@ -633,6 +776,10 @@ static int negamax(Worker& w, int alpha, int beta, int depth, int ply, bool cutN
     if (!root) {
         if (stopFlag.load(std::memory_order_relaxed)) return 0;
         if (is_draw(w, ply)) return draw_value(ply);
+        if (UseCuckoo && alpha < draw_value(ply) && upcoming_repetition(w, ply)) {
+            alpha = draw_value(ply);
+            if (alpha >= beta) return alpha;
+        }
         if (ply >= MAX_PLY - 1) return pos.checkers ? 0 : evaluate(w, ply);
         alpha = std::max(-VALUE_MATE + ply, alpha);
         beta = std::min(VALUE_MATE - ply - 1, beta);
@@ -649,8 +796,11 @@ static int negamax(Worker& w, int alpha, int beta, int depth, int ply, bool cutN
     const bool ttPv = UseTtPv && (PV || (ttHit && tt.pv));
 
     if (!PV && !excl && ttHit && tt.depth >= depth && ttValue != VALUE_NONE &&
-        (tt.bound & (ttValue >= beta ? BOUND_LOWER : BOUND_UPPER)))
+        (tt.bound & (ttValue >= beta ? BOUND_LOWER : BOUND_UPPER))) {
+        if (UseTtBlend && ttValue >= beta && std::abs(ttValue) < MATE_BOUND && std::abs(beta) < MATE_BOUND)
+            return (ttValue * tt.depth + beta) / (tt.depth + 1);
         return ttValue;
+    }
 
     // Syzygy WDL: exact result for <= TB_LARGEST pieces right after a capture/pawn move
     if (!root && !excl && pos.halfmove == 0 && depth >= SyzygyProbeDepth && tb_ok(pos)) {
@@ -672,7 +822,7 @@ static int negamax(Worker& w, int alpha, int beta, int depth, int ply, bool cutN
         rawEval = eval = w.staticEval[ply] = VALUE_NONE;
     } else {
         rawEval = (ttHit && tt.eval != VALUE_NONE) ? tt.eval : evaluate(w, ply, (UseSigma || UseSigLmr) && nnue::sigma_loaded());
-        eval = w.staticEval[ply] = corrected(w, pos, rawEval);
+        eval = w.staticEval[ply] = corrected(w, pos, rawEval, ply);
         if (ttHit && ttValue != VALUE_NONE && (tt.bound & (ttValue > eval ? BOUND_LOWER : BOUND_UPPER)))
             eval = ttValue;
     }
@@ -683,6 +833,14 @@ static int negamax(Worker& w, int alpha, int beta, int depth, int ply, bool cutN
         else improving = true;
     }
     w.killers[ply + 1][0] = w.killers[ply + 1][1] = 0;
+    if (UseThreatHist) w.thr[ply] = attacks_by(pos, us ^ 1);
+
+    // hindsight: the parent reduced the move to here; judge the reduction by both static evals
+    if (UseHindsight && !root && !inCheck && !excl && w.redIn[ply] > 0 && w.staticEval[ply - 1] != VALUE_NONE) {
+        int sum = w.staticEval[ply] + w.staticEval[ply - 1];
+        if (w.redIn[ply] >= HsRed && sum <= HsWorsen) depth++;
+        else if (depth >= 2 && sum > HsMargin) depth--;
+    }
 
     if (!PV && !inCheck && !excl) {
         // razoring: hopeless at low depth -> verify with quiescence only
@@ -812,9 +970,11 @@ static int negamax(Worker& w, int alpha, int beta, int depth, int ply, bool cutN
                 int sg = node_sigma(w, ply);
                 r += (sg < SigLo) - (sg > SigHi);
             }
-            r -= h / HistDiv;
+            r -= (UseHistNorm ? h * 300 / hist_wsum() : h) / HistDiv;
             int d = std::clamp(newDepth - r, 1, newDepth);
+            w.redIn[ply + 1] = newDepth - d;
             v = -negamax<false>(w, -(alpha + 1), -alpha, d, ply + 1, true);
+            w.redIn[ply + 1] = 0;
             if (v > alpha && d < newDepth) {
                 if (UseDeeper) newDepth += (v > bestValue + DeeperMargin + 2 * newDepth) - (v < bestValue + newDepth);
                 if (d < newDepth) v = -negamax<false>(w, -(alpha + 1), -alpha, newDepth, ply + 1, !cutNode);
@@ -866,17 +1026,16 @@ static int negamax(Worker& w, int alpha, int beta, int depth, int ply, bool cutN
             if (w.killers[ply][0] != bestMove) { w.killers[ply][1] = w.killers[ply][0]; w.killers[ply][0] = bestMove; }
             if (ply > 0 && w.currentMove[ply - 1])
                 w.counter[w.movedPiece[ply - 1]][to_sq(w.currentMove[ply - 1])] = bestMove;
-            update_hist(w.hist[us][from_sq(bestMove)][to_sq(bestMove)], bonus);
-            for (int i = 0; i < nq; i++) update_hist(w.hist[us][from_sq(quiets[i])][to_sq(quiets[i])], -bonus);
+            update_hist(main_hist(w, us, w.thr[ply], bestMove), bonus);
+            for (int i = 0; i < nq; i++) update_hist(main_hist(w, us, w.thr[ply], quiets[i]), -bonus);
             if (UsePawnHist) {
                 auto& ph = w.phist[phist_idx(pos)];
                 update_hist(ph[pos.board[from_sq(bestMove)]][to_sq(bestMove)], bonus);
                 for (int i = 0; i < nq; i++) update_hist(ph[pos.board[from_sq(quiets[i])]][to_sq(quiets[i])], -bonus);
             }
             if (UseContHist)
-                for (int bi = 0; bi < 2 + UseCont4; bi++) {
-                    static const int backs[3] = {1, 2, 4};
-                    int back = backs[bi];
+                for (int bi = 0; bi < n_cont(); bi++) {
+                    int back = contBacks[bi];
                     if (!cont_idx_ok(w, ply, back)) continue;
                     auto& tab = w.cont[w.movedPiece[ply - back]][to_sq(w.currentMove[ply - back])];
                     update_hist(tab[pos.board[from_sq(bestMove)]][to_sq(bestMove)], bonus);
@@ -892,11 +1051,13 @@ static int negamax(Worker& w, int alpha, int beta, int depth, int ply, bool cutN
         // every reply failed low: the opponent's last quiet move was good, reward it from their side
         int bonus = std::min(16 * depth * depth + 32 * depth, 1200);
         Move pm = w.currentMove[ply - 1];
-        update_hist(w.hist[us ^ 1][from_sq(pm)][to_sq(pm)], bonus);
+        update_hist(main_hist(w, us ^ 1, w.thr[ply - 1], pm), bonus);
         if (UseContHist && cont_idx_ok(w, ply - 1, 1))
             update_hist(w.cont[w.movedPiece[ply - 2]][to_sq(w.currentMove[ply - 2])][w.movedPiece[ply - 1]][to_sq(pm)], bonus);
     }
 
+    if (UseFhBlend && !PV && !excl && bestValue >= beta && depth >= 2 && std::abs(bestValue) < MATE_BOUND && std::abs(beta) < MATE_BOUND)
+        bestValue = (bestValue * depth + beta) / (depth + 1);
     int bound = bestValue >= beta ? BOUND_LOWER : (PV && bestMove ? BOUND_EXACT : BOUND_UPPER);
     // correction history: learn how far the static eval of this pawn structure is off
     if (UseCorrHist && !inCheck && !excl && (!bestMove || is_quiet(bestMove)) && std::abs(bestValue) < TB_WIN_V - MAX_PLY &&
@@ -908,6 +1069,9 @@ static int negamax(Worker& w, int alpha, int beta, int depth, int ply, bool cutN
     if (UseCorr2 && !inCheck && !excl && (!bestMove || is_quiet(bestMove)) && std::abs(bestValue) < TB_WIN_V - MAX_PLY &&
         !(bound == BOUND_LOWER && bestValue <= w.staticEval[ply]) && !(bound == BOUND_UPPER && bestValue >= w.staticEval[ply]))
         corr2_update(w, pos, bestValue - w.staticEval[ply], depth);
+    if (UseCorr5 && !inCheck && !excl && (!bestMove || is_quiet(bestMove)) && std::abs(bestValue) < TB_WIN_V - MAX_PLY &&
+        !(bound == BOUND_LOWER && bestValue <= w.staticEval[ply]) && !(bound == BOUND_UPPER && bestValue >= w.staticEval[ply]))
+        corr5_update(w, pos, ply, bestValue - w.staticEval[ply], depth);
     if (!(root && w.pvIdx) && !excl)
         tt_store(pos.key, bestMove, value_to_tt(bestValue, ply), rawEval, depth, bound, ttPv);
     return bestValue;
@@ -996,12 +1160,21 @@ static void clear_worker(Worker& w) {
     std::memset(w.phist, 0, sizeof(w.phist));
     std::memset(w.cont, 0, sizeof(w.cont));
     std::memset(w.capt, 0, sizeof(w.capt));
+    std::memset(w.thist, 0, sizeof(w.thist));
+    std::memset(w.thr, 0, sizeof(w.thr));
+    std::memset(w.redIn, 0, sizeof(w.redIn));
+    std::memset(w.c5P, 0, sizeof(w.c5P));
+    std::memset(w.c5W, 0, sizeof(w.c5W));
+    std::memset(w.c5B, 0, sizeof(w.c5B));
+    std::memset(w.c5T, 0, sizeof(w.c5T));
+    std::memset(w.c5C, 0, sizeof(w.c5C));
     std::memset(w.excluded, 0, sizeof(w.excluded));
 }
 
 namespace search {
 
 void init() {
+    init_cuckoo();
     set_hash_mb(256);
     set_threads(1);
 }
@@ -1094,6 +1267,8 @@ void start(const Position& root, const std::vector<uint64_t>& history, const Lim
         w->dext[0] = 0;
         std::memset(w->killers, 0, sizeof(w->killers));
         for (auto& row : w->hist) for (auto& col : row) for (int& v : col) v /= 2;
+        if (UseThreatHist) for (int& v : *reinterpret_cast<int(*)[sizeof(w->thist) / sizeof(int)]>(&w->thist)) v /= 2;
+        w->redIn[0] = 0;
         w->rootMoves.clear();
         for (int i = 0; i < legal.size; i++) { RootMove rm; rm.move = legal.moves[i]; w->rootMoves.push_back(rm); }
     }
@@ -1135,6 +1310,16 @@ void search_nodes(const Position& root, const std::vector<uint64_t>& history, ui
     score = rm.score != -VALUE_INF ? rm.score : rm.prevScore;
 }
 
+// debug: does the side to move at `root` have a reversible move back into the game history?
+bool cuckoo_check(const Position& root, const std::vector<uint64_t>& history) {
+    auto w = std::make_unique<Worker>();
+    w->pos[0] = root;
+    w->keys = history;
+    w->gameLen = (int)history.size();
+    w->keys.resize(w->gameLen + MAX_PLY + 8);
+    w->pfn[0] = root.halfmove;
+    return upcoming_repetition(*w, 0);
+}
 uint64_t bench_one(const Position& root, int depth, bool quiet) {
     quietOutput = quiet;
     Limits lim;

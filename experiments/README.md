@@ -25,6 +25,7 @@ the current baseline in a test; otherwise it is rejected or left as neutral.
 | [`04-width-x-source-sweep.md`](04-width-x-source-sweep.md) | current experiment: net width x training-label source |
 | [`05-specialised-weights.md`](05-specialised-weights.md) | king buckets 16/32, factorizer, phase/colour weight sets, opening expert nets: stopped, no benefit |
 | [`06-opening-books.md`](06-opening-books.md) | opening book shoot-out (12 books, round robin + joint rating fit): Cerebellum chosen, about +60 Elo over no book |
+| [`07-round-h.md`](07-round-h.md) | Round H (Coda-inspired): Leela-trained threat net with bullet (+34 vs W512_sf), search features, eval error by game phase |
 | [`LEDGER.md`](LEDGER.md) | the raw log, in the order things happened (cluster paths and job ids left in) |
 | [`options/`](options) | the exact UCI option sets of bundles D, E1 and E |
 

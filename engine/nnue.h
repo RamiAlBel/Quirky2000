@@ -10,6 +10,7 @@
 //   L2, L3:              tiny (8->32->1), done in float FMA
 #pragma once
 #include "position.h"
+#include <vector>
 // The same code is compiled twice: as namespace nnue (main net, width ACC_WIDTH) and, via nnue_small.cpp,
 // as namespace nnue_small (width 128, used for clearly decided positions when UseSmallNet is on).
 #ifndef NNUE_NS
@@ -47,6 +48,9 @@ void update(const Position& parent, Move m, const Position& child, const Accumul
 int evaluate(const Accumulator& acc, int stm, int pieces);             // centipawns, quantized SIMD path
 double evaluate_float_raw(const Accumulator& acc, int stm, int pieces); // raw network output, float reference
 double evaluate_quant_raw(const Accumulator& acc, int stm, int pieces); // raw network output, quantized path
+#if defined(NNUE_LNN6) && !defined(NNUE_SMALL_TU)
+void features(const Position& pos, int persp, std::vector<int>& out);  // sorted LNN6 input indices (parity test)
+#endif
 #ifdef NNUE_LNN2
 bool load_sigma(const std::string& path);  // SIG1 uncertainty head for the loaded net (training/sigma.py)
 bool sigma_loaded();

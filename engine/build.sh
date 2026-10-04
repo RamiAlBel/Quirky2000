@@ -2,6 +2,7 @@
 # Linux build (g++, x86-64 with AVX2 + BMI2).   ./build.sh [NAME]   -> ../bin/NAME   (default NAME=quirky)
 #   ACC=1024 ./build.sh w1024     net accumulator width baked into the binary (must match the .nnue; default 512)
 #   EXTRA=-DFT_INT8 ./build.sh    extra compiler flags
+#   ACC=1024 EXTRA=-DNNUE_LNN6 ./build.sh quirky_h   Round H net (weights/L1024T_lc0.nnue: 16 king buckets + threat inputs)
 # Syzygy probing needs Fathom in ../third_party/fathom (cloned automatically on first build).
 set -e
 cd "$(dirname "$0")"

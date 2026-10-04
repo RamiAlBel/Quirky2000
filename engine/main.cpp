@@ -7,6 +7,7 @@
 #include "book.h"
 
 extern int UseBook, BookDepth, BookBest;  // search.cpp tunables
+#include <fstream>
 #include <iostream>
 #include <sstream>
 #include <string>
@@ -371,6 +372,39 @@ int main(int argc, char** argv) {
         } else if (tok == "d") {
             printf("%s\n", pos.fen().c_str());
             fflush(stdout);
+#ifdef NNUE_LNN6
+        } else if (tok == "features" || tok == "evalfile") {
+            // features: LNN6 input indices of the current position (cf. bullet QK_MODE=dump)
+            // evalfile F: float/quant eval of every FEN in F (cf. bullet QK_MODE=eval)
+            std::vector<std::string> fens;
+            if (tok == "features") fens.push_back(pos.fen());
+            else {
+                std::string path;
+                is >> path;
+                std::ifstream in(path);
+                for (std::string l; std::getline(in, l);) if (l.find('/') != std::string::npos) fens.push_back(l);
+            }
+            for (auto& fen : fens) {
+                Position p;
+                p.set_fen(fen);
+                if (tok == "features") {
+                    std::vector<int> fs;
+                    for (int side = 0; side < 2; side++) {
+                        nnue::features(p, side == 0 ? p.stm : p.stm ^ 1, fs);
+                        printf("%s", side == 0 ? "STM" : "NTM");
+                        for (int x : fs) printf(" %d", x);
+                        printf("\n");
+                    }
+                } else {
+                    Accumulator a;
+                    nnue::refresh_all(p, a);
+                    int n = popcount(p.occupied);
+                    printf("EVAL %s | %.3f %.3f\n", fen.c_str(), 400 * nnue::evaluate_float_raw(a, p.stm, n),
+                           400 * nnue::evaluate_quant_raw(a, p.stm, n));
+                }
+            }
+            fflush(stdout);
+#endif
         } else if (tok == "eval") {
             Accumulator acc;
             nnue::refresh_all(pos, acc);
@@ -404,6 +438,22 @@ int main(int argc, char** argv) {
             };
             Walk::go(pos, depth, 0, stack, nodes, bad);
             printf("acccheck depth %d: %llu nodes, %llu mismatches\n", depth, (unsigned long long)nodes, (unsigned long long)bad);
+            fflush(stdout);
+        } else if (tok == "cuckoo") {  // debug: upcoming repetition for the side to move
+            printf("cuckoo %d\n", (int)search::cuckoo_check(pos, hist));
+            fflush(stdout);
+        } else if (tok == "updbench") {  // incremental update cost over the legal moves of the current position
+            Accumulator a, b;
+            nnue::refresh_all(pos, a);
+            MoveList l;
+            generate_legal(pos, l);
+            std::vector<Position> kids(l.size, pos);
+            for (int i = 0; i < l.size; i++) kids[i].do_move(l.moves[i]);
+            const int N = 200000;
+            auto t0 = std::chrono::steady_clock::now();
+            for (int r = 0; r < N; r++) { int i = r % l.size; nnue::update(pos, l.moves[i], kids[i], a, b); }
+            double ns = std::chrono::duration<double, std::nano>(std::chrono::steady_clock::now() - t0).count() / N;
+            printf("update(): %.1f ns/call over %d moves (%d)\n", ns, l.size, b.v[0][0]);
             fflush(stdout);
         } else if (tok == "evalbench") {
             Accumulator acc;
